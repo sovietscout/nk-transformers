@@ -1,17 +1,16 @@
 import argparse
-import gc
 import json
 import logging
 import pickle
 import signal
 import sys
 import time
+import tomllib
 import warnings
 from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
-import tomllib
 import torch
 
 from src.config import Config
@@ -55,14 +54,19 @@ def setup_signal_handlers():
 torch._logging.set_logs(recompiles=False, dynamic=False)
 logging.getLogger("torch").setLevel(logging.ERROR)
 warnings.filterwarnings(
-    "ignore", category=UserWarning, module="torch.nn.modules.transformer"
+    "ignore",
+    category=UserWarning,
+    module="torch.nn.modules.transformer",
 )
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="NK Transformer — Replication + Extensions")
     p.add_argument(
-        "--config", type=str, default="config.toml", help="Path to TOML config file"
+        "--config",
+        type=str,
+        default="config.toml",
+        help="Path to TOML config file",
     )
     p.add_argument(
         "--skip-train",
@@ -70,7 +74,9 @@ def parse_args():
         help="Skip training, load existing checkpoint",
     )
     p.add_argument(
-        "--skip-benchmarks", action="store_true", help="Skip VAR/BVAR benchmarks (slow)"
+        "--skip-benchmarks",
+        action="store_true",
+        help="Skip VAR/BVAR benchmarks (slow)",
     )
     p.add_argument(
         "--skip-yonly",
@@ -106,6 +112,10 @@ def load_config(config_path: str) -> Config:
 
 
 def to_jsonable(obj):
+    from dataclasses import fields, is_dataclass
+
+    if is_dataclass(obj):
+        return {f.name: to_jsonable(getattr(obj, f.name)) for f in fields(obj)}
     if isinstance(obj, dict):
         return {str(k): to_jsonable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -143,11 +153,12 @@ def _main(cfg, total_t0):
     cfg.paths.figures.mkdir(parents=True, exist_ok=True)
 
     print(
-        f"[{time.strftime('%H:%M:%S')}] NK-Transformers | Policy: {cfg.experiment.policy_holdout}"
+        f"[{time.strftime('%H:%M:%S')}] NK-Transformers | Policy: {cfg.experiment.policy_holdout}",
     )
     t1 = time.perf_counter()
     data, stats = load_and_prepare(
-        cfg.paths.cache, policy_holdout=cfg.experiment.policy_holdout
+        cfg.paths.cache,
+        policy_holdout=cfg.experiment.policy_holdout,
     )
 
     t2 = time.perf_counter()
@@ -155,7 +166,7 @@ def _main(cfg, total_t0):
     device = cfg.device
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
-        print(f"[WARN] CUDA unavailable; using CPU")
+        print("[WARN] CUDA unavailable; using CPU")
 
     if not cfg.skip_train:
         model, history = train_model(
@@ -173,11 +184,15 @@ def _main(cfg, total_t0):
         from src.model import NKTransformer
 
         model = NKTransformer(
-            d_model=64, n_heads=4, n_layers=4, ff_dim=256, dropout=0.1
+            d_model=64,
+            n_heads=4,
+            n_layers=4,
+            ff_dim=256,
+            dropout=0.1,
         )
         ckpt_path = cfg.paths.checkpoints / "best_model.pt"
         model.load_state_dict(
-            torch.load(ckpt_path, map_location="cpu", weights_only=True)
+            torch.load(ckpt_path, map_location="cpu", weights_only=True),
         )
         model.eval()
 
@@ -252,12 +267,15 @@ def _main(cfg, total_t0):
             )
             y_ckpt_path = y_ckpt / "best_model.pt"
             y_model.load_state_dict(
-                torch.load(y_ckpt_path, map_location="cpu", weights_only=True)
+                torch.load(y_ckpt_path, map_location="cpu", weights_only=True),
             )
             y_model.eval()
 
         y_tf_mse, y_tf_pervar = evaluate_one_step_mse(
-            y_model, y_data, y_stats, device=device
+            y_model,
+            y_data,
+            y_stats,
+            device=device,
         )
         kalman_mse, kalman_pervar = evaluate_kalman_one_step(data)
         yonly_results = {
@@ -272,7 +290,11 @@ def _main(cfg, total_t0):
 
     t4 = time.perf_counter()
     irf_summary = evaluate_irf_accuracy(
-        model, data, stats, n_sims=cfg.experiment.n_irf, device=device
+        model,
+        data,
+        stats,
+        n_sims=cfg.experiment.n_irf,
+        device=device,
     )
 
     t5 = time.perf_counter()
@@ -392,7 +414,12 @@ def _main(cfg, total_t0):
     )
 
     irf_paths = collect_irf_paths(
-        model, data, stats, sim_idx=0, horizon=20, device=device
+        model,
+        data,
+        stats,
+        sim_idx=0,
+        horizon=20,
+        device=device,
     )
     plot_irf_paths(
         irf_paths,
@@ -420,7 +447,7 @@ def _main(cfg, total_t0):
 
     stages = f"Data:{runtime_stats['data_loading']:.0f}s Train:{runtime_stats['training']:.0f}s Bench:{runtime_stats['benchmarks']:.0f}s IRF:{runtime_stats['irf_eval']:.0f}s"
     print(
-        f"[{time.strftime('%H:%M:%S')}] Complete | {total_time:.0f}s | {stages} | TF:{tf_mse:.2e} VAR:{var_mse:.2e}"
+        f"[{time.strftime('%H:%M:%S')}] Complete | {total_time:.0f}s | {stages} | TF:{tf_mse:.2e} VAR:{var_mse:.2e}",
     )
 
 
