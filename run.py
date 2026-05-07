@@ -71,6 +71,9 @@ def load_config(config_path):
             if key not in cfg[section]:
                 raise KeyError(f"Missing required config key: {section}.{key}")
 
+    if 'device' not in cfg.get('experiment', {}):
+        raise KeyError("Missing required config key: experiment.device")
+
     cfg['paths'] = {k: Path(v) for k, v in cfg['paths'].items()}
 
     return cfg
@@ -112,7 +115,7 @@ def main():
 
     t2 = time.perf_counter()
 
-    device = cfg['device']
+    device = cfg['experiment']['device']
     if device == 'cuda' and not torch.cuda.is_available():
         device = 'cpu'
         print(f"[WARN] CUDA unavailable; using CPU")
