@@ -131,8 +131,8 @@ def main():
         model.load_state_dict(torch.load(ckpt_path, map_location='cpu', weights_only=True))
         model.eval()
 
-    gc.collect()
     if device == 'cuda':
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
 
     t3 = time.time()
@@ -207,8 +207,8 @@ def main():
         }
 
         del y_model
-        gc.collect()
         if device == 'cuda':
+            torch.cuda.synchronize()
             torch.cuda.empty_cache()
 
     t4 = time.time()
@@ -227,13 +227,14 @@ def main():
 
     for N in sample_sizes:
         N_actual = min(N, data['X_train'].shape[0])
-        X_sub = data['X_train'][:N_actual]
-        Y_sub = data['Y_train'][:N_actual]
 
         sub_data = {
-            'X_train': X_sub, 'Y_train': Y_sub,
-            'X_val': data['X_val'], 'Y_val': data['Y_val'],
-            'X_test': data['X_test'], 'Y_test': data['Y_test'],
+            'X_train': data['X_train'][:N_actual],
+            'Y_train': data['Y_train'][:N_actual],
+            'X_val': data['X_val'],
+            'Y_val': data['Y_val'],
+            'X_test': data['X_test'],
+            'Y_test': data['Y_test'],
         }
 
         ts0 = time.time()
@@ -253,10 +254,15 @@ def main():
         sub_mse, _ = evaluate_one_step_mse(sub_model, data, stats, device=device)
         tf_mse_by_n.append(sub_mse)
 
-        del sub_model
-        gc.collect()
+        del sub_model, sub_data
         if device == 'cuda':
+            torch.cuda.synchronize()
             torch.cuda.empty_cache()
+
+    del data  # Free main dataset after scaling experiment
+    if device == 'cuda':
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
 
     ss_results = {
         'sample_sizes': sample_sizes,

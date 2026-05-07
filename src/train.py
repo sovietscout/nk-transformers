@@ -38,12 +38,7 @@ def train_model(data: dict,
                 compile_model: bool = False):
     os.makedirs(checkpoint_dir, exist_ok=True)
     device = torch.device(device if torch.cuda.is_available() and device == 'cuda' else 'cpu')
-    
-    import gc
-    gc.collect()
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
-        
+
     if not silent:
         print(f"  [*] Device: {device}")
 
