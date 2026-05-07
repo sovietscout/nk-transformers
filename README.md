@@ -53,31 +53,26 @@ where $y_t=(x_t,\pi_t)$ and $s_t=(r_t^n,u_t,v_t)$. The interest rate is then rec
 
 ## Simulation Design
 
-The default run draws 60,000 valid economies, simulates 200 periods for each, discards the first 50 periods, and retains 150 observations per economy.
+The default run draws 60,000 valid economies (50,000 for training, 5,000 for validation, and 5,000 for testing). Each economy is simulated for 200 periods, with the first 50 periods discarded to retain 150 observations.
 
-| Split | Economies |
-|---|---:|
-| Training | 50,000 |
-| Validation | 5,000 |
-| Test | 5,000 |
+The parameter prior ranges have been updated to reflect the modern empirical consensus (see `parameters.md` for a detailed literature review).
 
-The parameter prior is uniform over the following ranges:
-
-| Parameter | Symbol | Range |
-|---|---:|---:|
-| Intertemporal elasticity inverse | $\sigma$ | $[1.0, 3.0]$ |
-| Discount factor | $\beta$ | $0.99$ |
-| Phillips-curve slope | $\kappa$ | $[0.05, 0.50]$ |
-| Taylor-rule inflation coefficient | $\phi_\pi$ | $[1.1, 3.0]$ |
-| Taylor-rule output coefficient | $\phi_x$ | $[0.0, 1.0]$ |
-| Natural-rate persistence | $\rho_r$ | $[0.50, 0.95]$ |
-| Cost-push persistence | $\rho_u$ | $[0.30, 0.90]$ |
-| Policy-shock persistence | $\rho_v$ | $[0.30, 0.90]$ |
-| Natural-rate innovation sd | $\sigma_r$ | $[0.005, 0.030]$ |
-| Cost-push innovation sd | $\sigma_u$ | $[0.001, 0.015]$ |
-| Policy innovation sd | $\sigma_v$ | $[0.001, 0.015]$ |
+| Parameter | Symbol | Range | Reference |
+|---|---|---|---|
+| Intertemporal elasticity inverse | $\sigma$ | $[1.0, 3.0]$ | Galí (2008), Smets & Wouters (2007) |
+| Discount factor | $\beta$ | $0.99$ | Woodford (2003), Galí (2008) |
+| Phillips-curve slope | $\kappa$ | $[0.01, 0.20]$ | Hazell et al. (2022) |
+| Taylor-rule inflation coefficient | $\phi_\pi$ | $[1.1, 3.0]$ | Clarida et al. (1999), Taylor (1993) |
+| Taylor-rule output coefficient | $\phi_x$ | $[0.0, 1.0]$ | Taylor (1993), Smets & Wouters (2007) |
+| Natural-rate persistence | $\rho_r$ | $[0.50, 0.95]$ | Smets & Wouters (2007) |
+| Cost-push persistence | $\rho_u$ | $[0.30, 0.80]$ | Smets & Wouters (2007) |
+| Policy-shock persistence | $\rho_v$ | $[0.30, 0.70]$ | Smets & Wouters (2007) |
+| Natural-rate innovation sd | $\sigma_r$ | $[0.004, 0.010]$ | Smets & Wouters (2007) |
+| Cost-push innovation sd | $\sigma_u$ | $[0.001, 0.008]$ | Smets & Wouters (2007) |
+| Policy innovation sd | $\sigma_v$ | $[0.001, 0.008]$ | Smets & Wouters (2007) |
 
 By default, the policy-regime split holds out aggressive inflation-response Taylor rules for testing. Training and validation draw $\phi_\pi \in [1.1,2.4)$; test economies draw $\phi_\pi \in [2.4,3.0]$. Passing `--policy-holdout none` draws all splits from the full prior.
+
 
 For economy $i$ and date $t$, the supervised input is
 
@@ -89,18 +84,10 @@ and the target is $y_{i,t}=(x_{i,t},\pi_{i,t},i_{i,t})$. Features and targets ar
 
 ## Transformer
 
-The main model is a causal Transformer encoder with sinusoidal positional encodings.
-
-| Component | Value |
-|---|---:|
-| Input dimension | 17 |
-| Output dimension | 3 |
-| Model dimension | 64 |
-| Attention heads | 4 |
-| Layers | 3 |
-| Feedforward dimension | 256 |
-| Dropout | 0.1 |
-| Parameters | approximately 151k |
+The main model is a causal Transformer encoder with sinusoidal positional encodings. Key architecture details include:
+- **Dimensions**: Input (17), Output (3), Model (64), Feedforward (256)
+- **Structure**: 4 Layers, 4 Attention heads, 0.1 Dropout
+- **Parameters**: Approximately 184,000
 
 Training uses AdamW, mean squared error loss, cosine learning-rate decay, gradient clipping, early stopping, CUDA mixed precision when available, and `torch.compile` on supported CUDA installations.
 
@@ -109,26 +96,20 @@ Multi-step forecasts are generated autoregressively. The model is initialised wi
 ## Benchmarks
 
 Two reduced-form benchmarks are estimated separately for each test economy:
-
-| Benchmark | Specification |
-|---|---|
-| OLS VAR | Lag order selected by AIC over $p \in \{1,\ldots,8\}$ |
-| BVAR | Minnesota prior, fixed $p=4$, conjugate Normal-inverse-Wishart posterior |
-| Kalman VAR | VAR(1) written as a linear Gaussian state-space model; used in the y-only experiment |
+- **OLS VAR**: Lag order selected by AIC over $p \in \{1,\ldots,8\}$.
+- **BVAR**: Minnesota prior, fixed $p=4$, conjugate Normal-inverse-Wishart posterior.
+- **Kalman VAR**: VAR(1) written as a linear Gaussian state-space model (used in the y-only experiment).
 
 The benchmarks use only realised observables. They do not observe the structural parameter vector or the contemporaneous innovation vector. This information difference is part of the experimental design and should be considered when interpreting relative performance.
 
 ## Evaluation
 
-The pipeline reports:
-
-| Metric | Description |
-|---|---|
-| One-step MSE | Predict $y_t$ from $\theta$, $\varepsilon_t$, and the true lag $y_{t-1}$; score after a 50-period warmup |
-| Multi-step MSE | Forecast horizons $h \in \{1,4,8,12,20\}$ from a 50-period context |
-| IRF MSE | Compare predicted impulse responses to analytical NK impulse responses over 20 quarters |
-| IRF sign accuracy | Share of nonzero-horizon responses for which the predicted sign matches the analytical response |
-| Sample-size curve | Retrain the Transformer on subsets of the training economies and compare with flat per-economy VAR/BVAR baselines |
+The pipeline reports the following metrics:
+- **One-step MSE**: Predict $y_t$ from $\theta$, $\varepsilon_t$, and the true lag $y_{t-1}$; score after a 50-period warmup.
+- **Multi-step MSE**: Forecast horizons $h \in \{1,4,8,12,20\}$ from a 50-period context.
+- **IRF MSE**: Compare predicted impulse responses to analytical NK impulse responses over 20 quarters.
+- **IRF sign accuracy**: Share of nonzero-horizon responses for which the predicted sign matches the analytical response.
+- **Sample-size curve**: Retrain the Transformer on subsets of the training economies and compare with flat per-economy VAR/BVAR baselines.
 
 Transformer impulse responses are generated by feeding a one-standard-deviation structural shock at impact and zeros thereafter. VAR and BVAR impulse responses use Cholesky identification, so their IRFs are reduced-form comparisons rather than the same structural objects.
 
@@ -208,3 +189,23 @@ results/
 ```
 
 The main figures are Transformer trajectory overlays, all-model trajectory overlays, IRF path plots, IRF error summaries, sample-size learning curves, and forecast-horizon error plots. The plotting code uses a common large-format academic style: sparse grids, shared legends, consistent colours, and high-resolution output. Numerical summaries, including the y-only Transformer and Kalman MSEs, are written to `results/cache/results.json`.
+
+## References
+
+Clarida, R., Galí, J., & Gertler, M. (1999). The Science of Monetary Policy: A New Keynesian Perspective. *Journal of Economic Literature*, 37(4), 1661–1707.
+
+Galí, J., & Gertler, M. (1999). Inflation Dynamics: A Structural Econometric Analysis. *Journal of Monetary Economics*, 44(2), 195–222.
+
+Galí, J. (2008). *Monetary Policy, Inflation, and the Business Cycle: An Introduction to the New Keynesian Framework.* Princeton University Press.
+
+Gupta, A., & Imas, A. (2025). Can a Transformer 'Learn' Economic Relationships? Revisiting the Lucas Critique in the Age of Transformers. *Arpitrage* (Substack), December 22, 2025.
+
+Hazell, J., Herreño, J., Nakamura, E., & Steinsson, J. (2022). The Slope of the Phillips Curve: Evidence from U.S. States. *Quarterly Journal of Economics*, 137(3), 1299–1344.
+
+Rotemberg, J., & Woodford, M. (1997). An Optimization-Based Econometric Framework for the Evaluation of Monetary Policy. *NBER Macroeconomics Annual*, 12, 297–346.
+
+Smets, F., & Wouters, R. (2007). Shocks and Frictions in US Business Cycles: A Bayesian DSGE Approach. *American Economic Review*, 97(3), 586–606.
+
+Taylor, J. B. (1993). Discretion versus Policy Rules in Practice. *Carnegie-Rochester Conference Series on Public Policy*, 39, 195–214.
+
+Woodford, M. (2003). *Interest and Prices: Foundations of a Theory of Monetary Policy.* Princeton University Press.
