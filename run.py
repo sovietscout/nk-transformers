@@ -85,11 +85,13 @@ def to_jsonable(obj):
         return obj.tolist()
     if isinstance(obj, (np.floating, np.integer)):
         return obj.item()
+    if hasattr(obj, '__fspath__'):
+        return str(obj)
     return obj
 
 
 def main():
-    total_t0 = time.time()
+    total_t0 = time.perf_counter()
     cli_args = parse_args()
     cfg = load_config(cli_args.config)
 
@@ -102,13 +104,13 @@ def main():
     cfg['paths']['figures'].mkdir(parents=True, exist_ok=True)
 
     print(f"[{time.strftime('%H:%M:%S')}] NK-Transformers | Policy: {cfg['experiment']['policy_holdout']}")
-    t1 = time.time()
+    t1 = time.perf_counter()
     data, stats = load_and_prepare(
         cfg['paths']['cache'],
         policy_holdout=cfg['experiment']['policy_holdout']
     )
 
-    t2 = time.time()
+    t2 = time.perf_counter()
 
     device = cfg['device']
     if device == 'cuda' and not torch.cuda.is_available():
@@ -138,7 +140,7 @@ def main():
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
 
-    t3 = time.time()
+    t3 = time.perf_counter()
 
     one_step_results = {}
     multistep_results = {}
@@ -176,7 +178,7 @@ def main():
 
     yonly_results = {}
     if not cfg['skip_yonly']:
-        t3b = time.time()
+        t3b = time.perf_counter()
 
         y_data, y_stats = build_y_only_dataset(data, stats)
         y_ckpt = cfg['paths']['checkpoints'] / 'y_only'
@@ -214,11 +216,11 @@ def main():
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
 
-    t4 = time.time()
+    t4 = time.perf_counter()
     irf_summary = evaluate_irf_accuracy(model, data, stats,
                                         n_sims=cfg['experiment']['n_irf'], device=device)
 
-    t5 = time.time()
+    t5 = time.perf_counter()
     sample_sizes = cfg['experiment']['sample_sizes']
     tf_mse_by_n = []
     times_by_n = []
@@ -240,7 +242,7 @@ def main():
             'Y_test': data['Y_test'],
         }
 
-        ts0 = time.time()
+        ts0 = time.perf_counter()
         sub_model, _ = train_model(
             data=sub_data, device=device,
             epochs=min(cfg['training']['epochs'], max(20, N // 10)),
@@ -251,7 +253,7 @@ def main():
             silent=True,
             compile_model=cfg['training']['compile'],
         )
-        elapsed = time.time() - ts0
+        elapsed = time.perf_counter() - ts0
         times_by_n.append(elapsed)
 
         sub_mse, _ = evaluate_one_step_mse(sub_model, data, stats, device=device)
@@ -277,16 +279,16 @@ def main():
     with open(cfg['paths']['cache'] / 'sample_size_results.pkl', 'wb') as f:
         pickle.dump(ss_results, f)
 
-    t6 = time.time()
+    t6 = time.perf_counter()
 
     runtime_stats = {
-        'data_loading': time.time() - t1,
-        'training': time.time() - t2,
-        'benchmarks': time.time() - t3,
-        'irf_eval': time.time() - t4,
-        'sample_scaling': time.time() - t5,
-        'outputs': time.time() - t6,
-        'total': time.time() - total_t0,
+        'data_loading': time.perf_counter() - t1,
+        'training': time.perf_counter() - t2,
+        'benchmarks': time.perf_counter() - t3,
+        'irf_eval': time.perf_counter() - t4,
+        'sample_scaling': time.perf_counter() - t5,
+        'outputs': time.perf_counter() - t6,
+        'total': time.perf_counter() - total_t0,
     }
 
     results_dict = {
@@ -337,7 +339,7 @@ def main():
         save_path=cfg['paths']['figures'] / 'fig5_forecast_horizon.png',
     )
 
-    total_time = time.time() - total_t0
+    total_time = time.perf_counter() - total_t0
     tf_mse = one_step_results.get('Transformer', (np.nan,))[0]
     var_mse = one_step_results.get('VAR', (np.nan,))[0]
 

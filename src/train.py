@@ -86,7 +86,7 @@ def train_model(data: dict,
     history = {'train_loss': [], 'val_loss': []}
 
     for epoch in range(1, epochs + 1):
-        t0 = time.time()
+        t0 = time.perf_counter()
 
         model.train()
         train_loss = 0.0
