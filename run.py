@@ -348,11 +348,6 @@ def _main(cfg, total_t0):
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
 
-    del data  # Free main dataset after scaling experiment
-    if device == "cuda":
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
-
     ss_results = {
         "sample_sizes": sample_sizes,
         "transformer_mse": tf_mse_by_n,
@@ -440,6 +435,11 @@ def _main(cfg, total_t0):
         multistep_results,
         save_path=cfg.paths.figures / "fig5_forecast_horizon.png",
     )
+
+    del data  # Free main dataset after all plotting
+    if device == "cuda":
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
 
     total_time = time.perf_counter() - total_t0
     tf_mse = one_step_results.get("Transformer", (np.nan,))[0]
