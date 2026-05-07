@@ -1,5 +1,7 @@
 # NK Transformer Experiment Configuration
 
+device = "cuda"  # cuda or cpu
+
 [paths]
 cache = "./results/cache"
 checkpoints = "./results/checkpoints"
@@ -15,6 +17,3 @@ compile = false  # torch.compile (memory intensive)
 policy_holdout = "high-phi-pi"  # "high-phi-pi" or "none"
 n_irf = 50
 sample_sizes = [100, 300, 1000, 3000, 10000, 30000, 50000]
-
-# Device for training/inference
-device = "cuda"

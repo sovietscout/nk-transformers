@@ -3,6 +3,8 @@ import gc
 import json
 import logging
 import pickle
+import signal
+import sys
 import time
 import warnings
 from pathlib import Path
@@ -32,6 +34,19 @@ from src.visualisation import (
     plot_reduced_form_trajectory_overlay,
     plot_trajectory_overlay,
 )
+
+
+class GracefulInterrupt(Exception):
+    pass
+
+
+def signal_handler(signum, frame):
+    raise GracefulInterrupt("Interrupted by signal")
+
+
+def setup_signal_handlers():
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
 # Suppress noisy compiler logs and warnings
 torch._logging.set_logs(recompiles=False, dynamic=False)
@@ -71,8 +86,10 @@ def load_config(config_path):
             if key not in cfg[section]:
                 raise KeyError(f"Missing required config key: {section}.{key}")
 
-    if 'device' not in cfg.get('experiment', {}):
-        raise KeyError("Missing required config key: experiment.device")
+    if 'device' not in cfg:
+        raise KeyError("Missing required config key: device")
+
+    cfg['paths'] = {k: Path(v) for k, v in cfg['paths'].items()}
 
     cfg['paths'] = {k: Path(v) for k, v in cfg['paths'].items()}
 
@@ -94,6 +111,7 @@ def to_jsonable(obj):
 
 
 def main():
+    setup_signal_handlers()
     total_t0 = time.perf_counter()
     cli_args = parse_args()
     cfg = load_config(cli_args.config)
@@ -102,6 +120,15 @@ def main():
     cfg['skip_benchmarks'] = cli_args.skip_benchmarks
     cfg['skip_yonly'] = cli_args.skip_yonly
 
+    try:
+        _main(cfg, total_t0)
+    except GracefulInterrupt:
+        print(f"\n[{time.strftime('%H:%M:%S')}] Interrupted. Exiting gracefully...")
+        torch.cuda.empty_cache()
+        sys.exit(0)
+
+
+def _main(cfg, total_t0):
     cfg['paths']['cache'].mkdir(parents=True, exist_ok=True)
     cfg['paths']['checkpoints'].mkdir(parents=True, exist_ok=True)
     cfg['paths']['figures'].mkdir(parents=True, exist_ok=True)
@@ -115,7 +142,7 @@ def main():
 
     t2 = time.perf_counter()
 
-    device = cfg['experiment']['device']
+    device = cfg['device']
     if device == 'cuda' and not torch.cuda.is_available():
         device = 'cpu'
         print(f"[WARN] CUDA unavailable; using CPU")
