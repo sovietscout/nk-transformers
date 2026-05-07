@@ -1,8 +1,7 @@
-import os
-
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+from pathlib import Path
 
 matplotlib.use('Agg')
 
@@ -52,8 +51,8 @@ LINEWIDTHS = {
 }
 
 
-def ensure_dir(d):
-    os.makedirs(d, exist_ok=True)
+def ensure_dir(path):
+    Path(path).mkdir(parents=True, exist_ok=True)
 
 
 def format_axis(ax, xlabel=None, ylabel=None):
@@ -79,10 +78,9 @@ def add_shared_legend(fig, axes, ncol=4):
 
 
 def save_fig(fig, save_path):
-    ensure_dir(os.path.dirname(save_path))
+    ensure_dir(Path(save_path).parent)
     fig.savefig(save_path)
     plt.close(fig)
-    pass  # Silent export
 
 
 def plot_trajectory_overlay(data: dict, stats: dict, model, save_path: str,

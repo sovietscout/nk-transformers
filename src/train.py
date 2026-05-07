@@ -1,5 +1,5 @@
-import os
 import time
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -36,7 +36,8 @@ def train_model(data: dict,
                 checkpoint_dir: str = './results/checkpoints',
                 silent: bool = False,
                 compile_model: bool = False):
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device(device if torch.cuda.is_available() and device == 'cuda' else 'cpu')
 
     if not silent:
@@ -136,7 +137,7 @@ def train_model(data: dict,
             best_val_loss = val_loss
             best_epoch = epoch
             epochs_no_improve = 0
-            torch.save(model.state_dict(), os.path.join(checkpoint_dir, 'best_model.pt'))
+            torch.save(model.state_dict(), checkpoint_dir / 'best_model.pt')
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= patience:
@@ -144,7 +145,7 @@ def train_model(data: dict,
                     print(f"    [!] Early stopping at epoch {epoch}")
                 break
 
-    model.load_state_dict(torch.load(os.path.join(checkpoint_dir, 'best_model.pt'),
+    model.load_state_dict(torch.load(checkpoint_dir / 'best_model.pt',
                                      map_location='cpu', weights_only=True))
     model.eval()
     if not silent:

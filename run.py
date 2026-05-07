@@ -2,13 +2,13 @@ import argparse
 import gc
 import json
 import logging
-import os
 import pickle
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
-import tomli as tomllib
+import tomllib
 import warnings
 
 from src.simulator import load_and_prepare, build_y_only_dataset
@@ -53,7 +53,8 @@ def parse_args():
 
 
 def load_config(config_path):
-    if not os.path.isfile(config_path):
+    config_path = Path(config_path)
+    if not config_path.is_file():
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with open(config_path, 'rb') as f:
         cfg = tomllib.load(f)
@@ -69,6 +70,8 @@ def load_config(config_path):
         for key in keys:
             if key not in cfg[section]:
                 raise KeyError(f"Missing required config key: {section}.{key}")
+
+    cfg['paths'] = {k: Path(v) for k, v in cfg['paths'].items()}
 
     return cfg
 
@@ -94,9 +97,9 @@ def main():
     cfg['skip_benchmarks'] = cli_args.skip_benchmarks
     cfg['skip_yonly'] = cli_args.skip_yonly
 
-    os.makedirs(cfg['paths']['cache'], exist_ok=True)
-    os.makedirs(cfg['paths']['checkpoints'], exist_ok=True)
-    os.makedirs(cfg['paths']['figures'], exist_ok=True)
+    cfg['paths']['cache'].mkdir(parents=True, exist_ok=True)
+    cfg['paths']['checkpoints'].mkdir(parents=True, exist_ok=True)
+    cfg['paths']['figures'].mkdir(parents=True, exist_ok=True)
 
     print(f"[{time.strftime('%H:%M:%S')}] NK-Transformers | Policy: {cfg['experiment']['policy_holdout']}")
     t1 = time.time()
@@ -122,12 +125,12 @@ def main():
             checkpoint_dir=cfg['paths']['checkpoints'],
             compile_model=cfg['training']['compile'],
         )
-        with open(os.path.join(cfg['paths']['checkpoints'], 'history.pkl'), 'wb') as f:
+        with open(cfg['paths']['checkpoints'] / 'history.pkl', 'wb') as f:
             pickle.dump(history, f)
     else:
         from src.model import NKTransformer
         model = NKTransformer(d_model=64, n_heads=4, n_layers=4, ff_dim=256, dropout=0.1)
-        ckpt_path = os.path.join(cfg['paths']['checkpoints'], 'best_model.pt')
+        ckpt_path = cfg['paths']['checkpoints'] / 'best_model.pt'
         model.load_state_dict(torch.load(ckpt_path, map_location='cpu', weights_only=True))
         model.eval()
 
@@ -176,7 +179,7 @@ def main():
         t3b = time.time()
 
         y_data, y_stats = build_y_only_dataset(data, stats)
-        y_ckpt = os.path.join(cfg['paths']['checkpoints'], 'y_only')
+        y_ckpt = cfg['paths']['checkpoints'] / 'y_only'
 
         if not cfg['skip_train']:
             y_model, y_history = train_model(
@@ -188,14 +191,14 @@ def main():
                 checkpoint_dir=y_ckpt,
                 compile_model=cfg['training']['compile'],
             )
-            with open(os.path.join(y_ckpt, 'history.pkl'), 'wb') as f:
+            with open(y_ckpt / 'history.pkl', 'wb') as f:
                 pickle.dump(y_history, f)
         else:
             from src.model import NKTransformer
             y_model = NKTransformer(d_model=64, n_heads=4, n_layers=4,
                                     ff_dim=256, dropout=0.1,
                                     input_dim=3, output_dim=3)
-            y_ckpt_path = os.path.join(y_ckpt, 'best_model.pt')
+            y_ckpt_path = y_ckpt / 'best_model.pt'
             y_model.load_state_dict(torch.load(y_ckpt_path, map_location='cpu', weights_only=True))
             y_model.eval()
 
@@ -243,7 +246,7 @@ def main():
             epochs=min(cfg['training']['epochs'], max(20, N // 10)),
             batch_size=min(cfg['training']['batch_size'], max(16, N // 10)),
             lr=cfg['training']['learning_rate'],
-            checkpoint_dir=os.path.join(cfg['paths']['checkpoints'], f'subset_{N}'),
+            checkpoint_dir=cfg['paths']['checkpoints'] / f'subset_{N}',
             patience=5,
             silent=True,
             compile_model=cfg['training']['compile'],
@@ -271,7 +274,7 @@ def main():
         'bvar_mse': [bvar_baseline] * len(sample_sizes),
         'times': times_by_n,
     }
-    with open(os.path.join(cfg['paths']['cache'], 'sample_size_results.pkl'), 'wb') as f:
+    with open(cfg['paths']['cache'] / 'sample_size_results.pkl', 'wb') as f:
         pickle.dump(ss_results, f)
 
     t6 = time.time()
@@ -295,43 +298,43 @@ def main():
         'config': cfg,
         'runtime_stats': runtime_stats,
     }
-    results_path = os.path.join(os.path.dirname(cfg['paths']['cache']), 'results.json')
+    results_path = cfg['paths']['cache'].parent / 'results.json'
     with open(results_path, 'w') as f:
         json.dump(to_jsonable(results_dict), f, indent=2)
 
     plot_trajectory_overlay(
         data, stats, model,
-        save_path=os.path.join(cfg['paths']['figures'], 'fig1_trajectory_overlay.png'),
+        save_path=cfg['paths']['figures'] / 'fig1_trajectory_overlay.png',
         device=device,
     )
 
     plot_reduced_form_trajectory_overlay(
         data, stats, model,
-        save_path=os.path.join(cfg['paths']['figures'], 'fig2_model_trajectory_overlay.png'),
+        save_path=cfg['paths']['figures'] / 'fig2_model_trajectory_overlay.png',
         device=device,
     )
 
     plot_irf_grid(
         irf_summary,
-        save_path=os.path.join(cfg['paths']['figures'], 'fig3_irf_grid.png'),
+        save_path=cfg['paths']['figures'] / 'fig3_irf_grid.png',
     )
 
     irf_paths = collect_irf_paths(model, data, stats, sim_idx=0, horizon=20, device=device)
     plot_irf_paths(
         irf_paths,
-        save_path=os.path.join(cfg['paths']['figures'], 'fig3b_irf_paths.png'),
+        save_path=cfg['paths']['figures'] / 'fig3b_irf_paths.png',
     )
 
     var_mse_flat = [var_baseline] * len(sample_sizes)
     bvar_mse_flat = [bvar_baseline] * len(sample_sizes)
     plot_learning_curve(
         sample_sizes, tf_mse_by_n, var_mse_flat, bvar_mse_flat,
-        save_path=os.path.join(cfg['paths']['figures'], 'fig4_learning_curve.png'),
+        save_path=cfg['paths']['figures'] / 'fig4_learning_curve.png',
     )
 
     plot_forecast_horizon(
         multistep_results,
-        save_path=os.path.join(cfg['paths']['figures'], 'fig5_forecast_horizon.png'),
+        save_path=cfg['paths']['figures'] / 'fig5_forecast_horizon.png',
     )
 
     total_time = time.time() - total_t0
