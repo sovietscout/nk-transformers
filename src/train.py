@@ -1,21 +1,24 @@
 import os
 import time
+
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.data import DataLoader
 
 
 class NKDataset(torch.utils.data.Dataset):
     def __init__(self, X, Y):
-        self.X = torch.from_numpy(X)
-        self.Y = torch.from_numpy(Y)
+        self.X = X
+        self.Y = Y
 
     def __len__(self):
         return self.X.shape[0]
 
     def __getitem__(self, idx):
-        return self.X[idx], self.Y[idx]
+        x = torch.from_numpy(self.X[idx])
+        y = torch.from_numpy(self.Y[idx])
+        return x, y
 
 
 def train_model(data: dict,
@@ -31,20 +34,27 @@ def train_model(data: dict,
                 epochs: int = 100,
                 patience: int = 10,
                 checkpoint_dir: str = './results/checkpoints',
-                silent: bool = False):
+                silent: bool = False,
+                compile_model: bool = False):
     os.makedirs(checkpoint_dir, exist_ok=True)
     device = torch.device(device if torch.cuda.is_available() and device == 'cuda' else 'cpu')
+    
+    import gc
+    gc.collect()
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+        
     if not silent:
-        print(f"\t\t- Device: {device}")
+        print(f"  [*] Device: {device}")
 
     train_ds = NKDataset(data['X_train'], data['Y_train'])
     val_ds = NKDataset(data['X_val'], data['Y_val'])
 
-    n_workers = 0 if len(train_ds) < 1000 else 4
+    n_workers = 0 if len(train_ds) < 1000 else 3
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              drop_last=True, num_workers=n_workers, pin_memory=True)
+                              drop_last=True, num_workers=n_workers, pin_memory=False)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
-                            num_workers=n_workers, pin_memory=True)
+                            num_workers=n_workers, pin_memory=False)
 
     from src.model import NKTransformer
     input_dim = data['X_train'].shape[-1]
@@ -55,17 +65,17 @@ def train_model(data: dict,
         input_dim=input_dim, output_dim=output_dim,
     ).to(device)
 
-    if hasattr(torch, 'compile') and device.type == 'cuda':
+    if compile_model and hasattr(torch, 'compile') and device.type == 'cuda':
         try:
             model = torch.compile(model, mode='reduce-overhead', dynamic=True)
             if not silent:
-                print("\t\t- Optimization: torch.compile (dynamic-shape mode)")
+                print(f"  [*] torch.compile enabled")
         except Exception:
             pass
 
     total_params = sum(p.numel() for p in model.parameters())
     if not silent:
-        print(f"\t\t- Parameters: {total_params:,}")
+        print(f"  [*] Parameters: {total_params:,}")
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -124,8 +134,8 @@ def train_model(data: dict,
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
 
-        if not silent:
-            print(f"\t\t  [Epoch {epoch:3d}] Loss: {train_loss:.6f} | Val: {val_loss:.6f}")
+        if not silent and epoch % 10 == 0:
+            print(f"    Epoch {epoch:3d} | {train_loss:.4f} | {val_loss:.4f}")
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -136,13 +146,14 @@ def train_model(data: dict,
             epochs_no_improve += 1
             if epochs_no_improve >= patience:
                 if not silent:
-                    print(f"\t\t  [!] Early stopping at epoch {epoch}")
+                    print(f"    [!] Early stopping at epoch {epoch}")
                 break
 
     model.load_state_dict(torch.load(os.path.join(checkpoint_dir, 'best_model.pt'),
                                      map_location='cpu', weights_only=True))
     model.eval()
     if not silent:
-        print(f"\t\t- Convergence: Epoch {best_epoch} (Val MSE: {best_val_loss:.6f})")
+        print(f"    Converged epoch {best_epoch}, val {best_val_loss:.4f}")
+
 
     return model, history

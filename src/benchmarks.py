@@ -66,7 +66,9 @@ def select_var_order(Y: np.ndarray, p_max: int = 8):
                 best_p = p
         except ValueError:
             break
-    return (best_p,) + best_result
+    if best_result is None:
+        raise ValueError(f"VAR order selection failed: no valid lag found for data shape {Y.shape}")
+    return (best_p, *best_result, best_aic)
 
 
 def var_forecast(B: np.ndarray, c: np.ndarray, Y_history: np.ndarray,

@@ -1,11 +1,18 @@
 import numpy as np
 import torch
-from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
+from tqdm import tqdm
 
-from src.benchmarks import (select_var_order, var_forecast, var_irf,
-                        bvar_minnesota_fit, bvar_forecast, bvar_irf,
-                        fit_kalman_var, kalman_filter_forecast)
+from src.benchmarks import (
+    bvar_forecast,
+    bvar_irf,
+    bvar_minnesota_fit,
+    fit_kalman_var,
+    kalman_filter_forecast,
+    select_var_order,
+    var_forecast,
+    var_irf,
+)
 
 
 def unnormalise(Y_norm: np.ndarray, stats: dict) -> np.ndarray:

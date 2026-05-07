@@ -1,6 +1,7 @@
-import numpy as np
 import pickle
 from pathlib import Path
+
+import numpy as np
 
 
 def solve_nk_model(params: np.ndarray):
@@ -120,15 +121,15 @@ def generate_datasets(n_total: int = 60000,
         raise ValueError(f"Unknown policy_holdout: {policy_holdout}")
 
     def draw_split(count: int, split: str):
-        params_out = np.zeros((count, 11), dtype=np.float64)
-        obs_out = np.zeros((count, T_train, 3), dtype=np.float64)
-        shocks_out = np.zeros((count, T_train, 3), dtype=np.float64)
+        params_out = np.zeros((count, 11), dtype=np.float32)
+        obs_out = np.zeros((count, T_train, 3), dtype=np.float32)
+        shocks_out = np.zeros((count, T_train, 3), dtype=np.float32)
         draws = 0
         attempts = 0
         max_attempts = count * 10
         region = region_for_split(split)
 
-        print(f'\t\t- Generating {count} {split} draws ({region})...')
+        pass  # Silent generation
         while draws < count and attempts < max_attempts:
             attempts += 1
             params = sample_params(region)
@@ -137,9 +138,9 @@ def generate_datasets(n_total: int = 60000,
                 continue
 
             obs, shocks = result
-            params_out[draws] = params
-            obs_out[draws] = obs
-            shocks_out[draws] = shocks
+            params_out[draws] = params.astype(np.float32)
+            obs_out[draws] = obs.astype(np.float32)
+            shocks_out[draws] = shocks.astype(np.float32)
             draws += 1
 
         if draws < count:
@@ -148,27 +149,28 @@ def generate_datasets(n_total: int = 60000,
         return params_out, obs_out, shocks_out
 
     if n_total != n_train + n_val + n_test:
-        print(f'Ignoring n_total={n_total}; using split counts summing to {n_train + n_val + n_test}.')
+        pass  # Silent parameter adjustment
+
+    import gc
+    gc.collect()
 
     train_params, train_obs, train_shocks = draw_split(n_train, 'train')
     val_params, val_obs, val_shocks = draw_split(n_val, 'val')
     test_params, test_obs, test_shocks = draw_split(n_test, 'test')
 
-    # Vectorised construction of X_train
-    # train_params: (N, 11) -> (N, T, 11)
-    # train_shocks: (N, T, 3)
-    # lags: (N, T, 3)
-    
-    N_train_actual = len(train_params)
-    lags_train = np.zeros((N_train_actual, T_train, 3), dtype=np.float32)
-    lags_train[:, 1:, :] = train_obs[:, :-1, :]
-    
-    X_train = np.concatenate([
-        np.tile(train_params[:, np.newaxis, :], (1, T_train, 1)),
-        train_shocks.astype(np.float32),
-        lags_train
-    ], axis=2)
-    Y_train = train_obs.astype(np.float32)
+    def build_x_from_raw(params, shocks, obs):
+        N, T, _ = shocks.shape
+        X = np.zeros((N, T, 17), dtype=np.float32)
+        # Parameters (indices 0:11)
+        X[:, :, :11] = params[:, np.newaxis, :]
+        # Shocks (indices 11:14)
+        X[:, :, 11:14] = shocks
+        # Lags (indices 14:17)
+        X[:, 1:, 14:17] = obs[:, :-1, :]
+        return X
+
+    X_train = build_x_from_raw(train_params, train_shocks, train_obs)
+    Y_train = train_obs
 
     X_mean = X_train.reshape(-1, 17).mean(axis=0)
     X_std = X_train.reshape(-1, 17).std(axis=0)
@@ -185,22 +187,17 @@ def generate_datasets(n_total: int = 60000,
     }
 
     def build_split(params_list, obs_list, shocks_list):
-        N = len(params_list)
-        lags = np.zeros((N, T_train, 3), dtype=np.float32)
-        lags[:, 1:, :] = obs_list[:, :-1, :]
-        
-        X = np.concatenate([
-            np.tile(params_list[:, np.newaxis, :], (1, T_train, 1)),
-            shocks_list.astype(np.float32),
-            lags
-        ], axis=2)
-        Y = obs_list.astype(np.float32)
+        X = build_x_from_raw(params_list, shocks_list, obs_list)
+        Y = obs_list
         
         X = (X - X_mean) / X_std
         Y = (Y - Y_mean) / Y_std
-        return X.astype(np.float32), Y.astype(np.float32)
+        return X, Y
 
     X_train_norm, Y_train_norm = build_split(train_params, train_obs, train_shocks)
+    del X_train, Y_train
+    gc.collect()
+
     X_val_norm, Y_val_norm = build_split(val_params, val_obs, val_shocks)
     X_test_norm, Y_test_norm = build_split(test_params, test_obs, test_shocks)
 
@@ -208,12 +205,12 @@ def generate_datasets(n_total: int = 60000,
         'X_train': X_train_norm, 'Y_train': Y_train_norm,
         'X_val': X_val_norm, 'Y_val': Y_val_norm,
         'X_test': X_test_norm, 'Y_test': Y_test_norm,
-        'Y_test_raw': test_obs.astype(np.float32),
-        'params_test': test_params.astype(np.float32),
-        'Y_train_raw': train_obs.astype(np.float32),
-        'params_train': train_params.astype(np.float32),
-        'Y_val_raw': val_obs.astype(np.float32),
-        'params_val': val_params.astype(np.float32),
+        'Y_test_raw': test_obs,
+        'params_test': test_params,
+        'Y_train_raw': train_obs,
+        'params_train': train_params,
+        'Y_val_raw': val_obs,
+        'params_val': val_params,
     }
 
     cache_dir = Path(cache_dir)
@@ -243,8 +240,7 @@ def generate_datasets(n_total: int = 60000,
             'seed': seed,
         }, f)
 
-    print(f'Data shapes: train={X_train_norm.shape}, val={X_val_norm.shape}, test={X_test_norm.shape}')
-    print(f'Cached to {cache_dir}/')
+    pass  # Silent caching
 
     return data, stats
 
@@ -265,9 +261,9 @@ def load_and_prepare(cache_dir: str = './results/cache',
                 metadata = pickle.load(f)
         cached_holdout = metadata.get('policy_holdout', 'none')
         if cached_holdout != policy_holdout:
-            print(f"\t\t[!] Cache mismatch ({cached_holdout} vs {policy_holdout}). Regenerating...")
+            pass  # Silent regeneration
         else:
-            print("\t\t- Cache hit: Loading normalised buffers...")
+            pass  # Silent cache hit
             with open(cache_file, 'rb') as f:
                 norm_data = pickle.load(f)
             with open(stats_file, 'rb') as f:
@@ -285,7 +281,7 @@ def load_and_prepare(cache_dir: str = './results/cache',
             stats['policy_holdout'] = cached_holdout
             return data, stats
 
-    print("\t\t- Cache miss: Initialising generator...")
+    pass  # Silent cache miss
     data, stats = generate_datasets(cache_dir=str(cache_dir),
                                     policy_holdout=policy_holdout)
     return data, stats

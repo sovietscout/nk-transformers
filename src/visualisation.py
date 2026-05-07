@@ -1,8 +1,10 @@
 import os
-import numpy as np
+
 import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import numpy as np
+
+matplotlib.use('Agg')
 
 
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -14,9 +16,9 @@ plt.rcParams.update({
     'axes.edgecolor': '#9aa0a6',
     'axes.linewidth': 0.8,
     'legend.fontsize': 12,
-    'figure.dpi': 160,
+    'figure.dpi': 320,
     'savefig.bbox': 'tight',
-    'savefig.dpi': 220,
+    'savefig.dpi': 440,
     'savefig.facecolor': 'white',
     'figure.facecolor': 'white',
     'axes.facecolor': 'white',
@@ -42,11 +44,11 @@ LINESTYLES = {
     'Kalman VAR': (0, (5, 2, 1.5, 2)),
 }
 LINEWIDTHS = {
-    'True': 2.6,
-    'Transformer': 2.3,
-    'VAR': 2.0,
-    'BVAR': 2.0,
-    'Kalman VAR': 2.0,
+    'True': 1.3,
+    'Transformer': 1.15,
+    'VAR': 1.0,
+    'BVAR': 1.0,
+    'Kalman VAR': 1.0,
 }
 
 
@@ -80,7 +82,7 @@ def save_fig(fig, save_path):
     ensure_dir(os.path.dirname(save_path))
     fig.savefig(save_path)
     plt.close(fig)
-    print(f"\t\t[+] Exported: {save_path}")
+    pass  # Silent export
 
 
 def plot_trajectory_overlay(data: dict, stats: dict, model, save_path: str,
@@ -338,65 +340,3 @@ def plot_forecast_horizon(mses: dict, save_path: str):
 
     save_fig(fig, save_path)
 
-
-def print_table1(one_step_results: dict):
-    """Table 1: One-step-ahead MSE by model and observable."""
-    print("\n\t[>] Table 1: One-Step-Ahead MSE by Model")
-    header = f"\t\t{'Model':<15} | {'x':>10} | {'π':>10} | {'i':>10} | {'Overall':>10}"
-    print(header)
-    print("\t\t" + "-" * 63)
-
-    for m_name in ['Transformer', 'VAR', 'BVAR']:
-        if m_name in one_step_results:
-            overall, per_var = one_step_results[m_name]
-            print(f"\t\t{m_name:<15} | {per_var[0]:>10.6f} | {per_var[1]:>10.6f} | "
-                  f"{per_var[2]:>10.6f} | {overall:>10.6f}")
-
-
-def print_table2(multistep_results: dict):
-    """Table 2: Multi-step-ahead MSE by model and horizon."""
-    print("\n\t[>] Table 2: Multi-Step-Ahead MSE by Horizon")
-
-    all_horizons = set()
-    for m_res in multistep_results.values():
-        all_horizons.update(m_res.keys())
-    horizons = sorted(all_horizons)
-
-    header = f"\t\t{'Model':<15} |"
-    for h in horizons:
-        header += f" {'h='+str(h):>10} |"
-    print(header)
-    print("\t\t" + "-" * (16 + 13 * len(horizons)))
-
-    for m_name in ['Transformer', 'VAR', 'BVAR']:
-        if m_name in multistep_results:
-            row = f"\t\t{m_name:<15} |"
-            for h in horizons:
-                if h in multistep_results[m_name]:
-                    val = multistep_results[m_name][h]
-                    val = val[0] if isinstance(val, tuple) else val
-                    row += f" {val:>10.6f} |"
-                else:
-                    row += f" {'N/A':>10} |"
-            print(row)
-
-
-def print_table3(irf_summary: dict):
-    """Table 3: IRF accuracy by model, shock type, observable."""
-    print("\n\t[>] Table 3: Impulse Response Function Accuracy")
-
-    shock_types = ['r', 'u', 'v']
-    var_names = ['x', 'pi', 'i']
-
-    for m_name in ['Transformer', 'VAR', 'BVAR']:
-        if m_name not in irf_summary:
-            continue
-        print(f"\n\t\t- {m_name}")
-        print(f"\t\t  {'Shock':<6} | {'Var':<4} | {'IRF-MSE':>10} | {'Sign Acc':>10}")
-        print("\t\t  " + "-" * 38)
-        for s in shock_types:
-            for v in var_names:
-                if s in irf_summary[m_name] and v in irf_summary[m_name][s]:
-                    entry = irf_summary[m_name][s][v]
-                    print(f"\t\t  {s:<6} | {v:<4} | {entry['irf_mse_mean']:>10.6f} | "
-                          f"{entry['sign_acc_mean']:>10.3f}")

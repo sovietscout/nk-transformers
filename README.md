@@ -71,7 +71,7 @@ The parameter prior ranges have been updated to reflect the modern empirical con
 | Cost-push innovation sd | $\sigma_u$ | $[0.001, 0.008]$ | Smets & Wouters (2007) |
 | Policy innovation sd | $\sigma_v$ | $[0.001, 0.008]$ | Smets & Wouters (2007) |
 
-By default, the policy-regime split holds out aggressive inflation-response Taylor rules for testing. Training and validation draw $\phi_\pi \in [1.1,2.4)$; test economies draw $\phi_\pi \in [2.4,3.0]$. Passing `--policy-holdout none` draws all splits from the full prior.
+By default, the policy-regime split holds out aggressive inflation-response Taylor rules for testing. Training and validation draw $\phi_\pi \in [1.1,2.4)$; test economies draw $\phi_\pi \in [2.4,3.0]$. Setting `experiment.policy_holdout: none` in the config file draws all splits from the full prior.
 
 
 For economy $i$ and date $t$, the supervised input is
@@ -146,13 +146,14 @@ Finally, the repository defines the replication pipeline. Numerical claims shoul
 ```text
 nk-transformers/
 ├── run.py              # Pipeline entry point
+├── config.toml        # Experiment configuration
 ├── src/
-│   ├── simulator.py    # NK solution, simulation, caching
-│   ├── model.py        # Causal Transformer
-│   ├── train.py        # Training loop
-│   ├── evaluate.py     # Forecast, IRF, and y-only metrics
-│   ├── benchmarks.py   # VAR, BVAR, and Kalman implementations
-│   ├── plots.py        # Figures and tables
+│   ├── simulator.py  # NK solution, simulation, caching
+│   ├── model.py       # Causal Transformer
+│   ├── train.py       # Training loop
+│   ├── evaluate.py    # Forecast, IRF, and y-only metrics
+│   ├── benchmarks.py  # VAR, BVAR, and Kalman implementations
+│   ├── plots.py       # Figures and tables
 │   └── __init__.py
 ├── requirements.txt
 └── README.md
@@ -160,22 +161,29 @@ nk-transformers/
 
 ## Usage
 
+All experiment configuration is managed in `config.toml`. Copy the default and modify as needed:
+
+```bash
+cp config.toml config.local.toml  # create local override
+# edit config.local.toml with your settings
+```
+
+Run the pipeline:
+
 ```bash
 pip install -r requirements.txt
-python run.py
+python run.py --config config.local.toml
 ```
 
-Useful options:
+Useful operational flags (can be combined):
 
 ```bash
-python run.py --skip-train
-python run.py --skip-benchmarks
-python run.py --skip-yonly
-python run.py --policy-holdout none
-python run.py --epochs 200 --batch-size 256 --device cpu
-python run.py --sample-sizes "100,500,1000,5000,10000"
-python run.py --help
+python run.py --skip-train      # skip training, load checkpoint
+python run.py --skip-benchmarks # skip VAR/BVAR evaluations
+python run.py --skip-yonly      # skip y-only vs Kalman experiment
 ```
+
+See `config.toml` for all configurable options (paths, training hyperparameters, experiment settings).
 
 ## Outputs
 
@@ -188,7 +196,7 @@ results/
 └── figures/
 ```
 
-The main figures are Transformer trajectory overlays, all-model trajectory overlays, IRF path plots, IRF error summaries, sample-size learning curves, and forecast-horizon error plots. The plotting code uses a common large-format academic style: sparse grids, shared legends, consistent colours, and high-resolution output. Numerical summaries, including the y-only Transformer and Kalman MSEs, are written to `results/cache/results.json`.
+The main figures are Transformer trajectory overlays, all-model trajectory overlays, IRF path plots, IRF error summaries, sample-size learning curves, and forecast-horizon error plots. The plotting code uses a common large-format academic style: sparse grids, shared legends, consistent colours, and high-resolution output. Numerical summaries, including the y-only Transformer and Kalman MSEs, are written to `results/results.json`.
 
 ## References
 

@@ -1,0 +1,27 @@
+# NK Transformer Experiment Configuration
+
+# Directories
+[paths]
+cache = "./results/cache"
+checkpoints = "./results/checkpoints"
+figures = "./results/figures"
+
+# Device for training/inference
+device = "cuda"
+
+[training]
+# Training hyperparameters
+epochs = 100
+batch_size = 64
+learning_rate = 1.0e-3
+compile = false  # torch.compile (memory intensive)
+
+[experiment]
+# Policy holdout: "high-phi-pi" or "none"
+policy_holdout = "high-phi-pi"
+
+# Number of simulations for IRF evaluation
+n_irf = 50
+
+# Sample sizes for scaling experiment
+sample_sizes = [100, 300, 1000, 3000, 10000, 30000, 50000]
