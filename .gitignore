@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.so
+.venv/
+venv/
+env/
+.python-version
+
+# Results (data + outputs)
+results/
+
+# Reference papers (not source)
+readings/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Cache
+*.pkl
+*.pt
+
+# Jupyter
+.ipynb_checkpoints/
