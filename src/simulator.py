@@ -84,26 +84,20 @@ def generate_datasets(n_total: int = 60000,
                       T_sim: int = 200,
                       burn_in: int = 50,
                       seed: int = 42,
-                      cache_dir: str = './results/cache'):
+                      cache_dir: str = './results/cache',
+                      policy_holdout: str = 'high-phi-pi'):
     rng = np.random.RandomState(seed)
     T_train = T_sim - burn_in
 
-    all_params = np.zeros((n_total, 11), dtype=np.float64)
-    all_obs = np.zeros((n_total, T_train, 3), dtype=np.float64)
-    all_shocks = np.zeros((n_total, T_train, 3), dtype=np.float64)
-
-    draws = 0
-    attempts = 0
-    max_attempts = n_total * 3
-
-    print(f'Generating {n_total} simulation draws from NK model prior...')
-
-    while draws < n_total and attempts < max_attempts:
-        attempts += 1
-
+    def sample_params(region: str):
         sigma_val = 1.0 + 2.0 * rng.rand()
         kappa_val = 0.05 + 0.45 * rng.rand()
-        phi_pi_val = 1.1 + 1.9 * rng.rand()
+        if region == 'train':
+            phi_pi_val = 1.1 + 1.3 * rng.rand()
+        elif region == 'holdout':
+            phi_pi_val = 2.4 + 0.6 * rng.rand()
+        else:
+            phi_pi_val = 1.1 + 1.9 * rng.rand()
         phi_x_val = rng.rand()
         rho_r_val = 0.5 + 0.45 * rng.rand()
         rho_u_val = 0.3 + 0.60 * rng.rand()
@@ -112,51 +106,73 @@ def generate_datasets(n_total: int = 60000,
         sigma_u_val = 0.001 + 0.014 * rng.rand()
         sigma_v_val = 0.001 + 0.014 * rng.rand()
 
-        params = np.array([
+        return np.array([
             sigma_val, 0.99, kappa_val, phi_pi_val, phi_x_val,
             rho_r_val, rho_u_val, rho_v_val,
             sigma_r_val, sigma_u_val, sigma_v_val,
         ])
 
-        result = simulate_one_draw(params, T_sim, burn_in, rng)
-        if result is None:
-            continue
+    def region_for_split(split: str):
+        if policy_holdout == 'none':
+            return 'all'
+        if policy_holdout == 'high-phi-pi':
+            return 'holdout' if split == 'test' else 'train'
+        raise ValueError(f"Unknown policy_holdout: {policy_holdout}")
 
-        obs, shocks = result
+    def draw_split(count: int, split: str):
+        params_out = np.zeros((count, 11), dtype=np.float64)
+        obs_out = np.zeros((count, T_train, 3), dtype=np.float64)
+        shocks_out = np.zeros((count, T_train, 3), dtype=np.float64)
+        draws = 0
+        attempts = 0
+        max_attempts = count * 10
+        region = region_for_split(split)
 
-        all_params[draws] = params
-        all_obs[draws] = obs
-        all_shocks[draws] = shocks
-        draws += 1
+        print(f'Generating {count} {split} draws (policy region: {region})...')
+        while draws < count and attempts < max_attempts:
+            attempts += 1
+            params = sample_params(region)
+            result = simulate_one_draw(params, T_sim, burn_in, rng)
+            if result is None:
+                continue
 
-        if draws % 5000 == 0:
-            print(f'  {draws}/{n_total} (attempts: {attempts})')
+            obs, shocks = result
+            params_out[draws] = params
+            obs_out[draws] = obs
+            shocks_out[draws] = shocks
+            draws += 1
 
-    print(f'Generated {draws} valid draws in {attempts} attempts')
+            if draws % 5000 == 0:
+                print(f'  {split}: {draws}/{count} (attempts: {attempts})')
 
-    if draws < n_train + n_val + n_test:
-        raise RuntimeError(f"Only generated {draws} draws, but need {n_train + n_val + n_test}. "
-                           "Increase max_attempts or adjust prior bounds.")
+        if draws < count:
+            raise RuntimeError(f"Only generated {draws} {split} draws, but need {count}.")
 
-    train_params = all_params[:n_train]
-    train_obs = all_obs[:n_train]
-    train_shocks = all_shocks[:n_train]
+        print(f'Generated {draws} {split} draws in {attempts} attempts')
+        return params_out, obs_out, shocks_out
 
-    val_params = all_params[n_train:n_train + n_val]
-    val_obs = all_obs[n_train:n_train + n_val]
-    val_shocks = all_shocks[n_train:n_train + n_val]
+    if n_total != n_train + n_val + n_test:
+        print(f'Ignoring n_total={n_total}; using split counts summing to {n_train + n_val + n_test}.')
 
-    test_params = all_params[n_train + n_val:n_train + n_val + n_test]
-    test_obs = all_obs[n_train + n_val:n_train + n_val + n_test]
-    test_shocks = all_shocks[n_train + n_val:n_train + n_val + n_test]
+    train_params, train_obs, train_shocks = draw_split(n_train, 'train')
+    val_params, val_obs, val_shocks = draw_split(n_val, 'val')
+    test_params, test_obs, test_shocks = draw_split(n_test, 'test')
 
-    X_train = np.zeros((len(train_params), T_train, 17), dtype=np.float32)
-    Y_train = train_obs.copy().astype(np.float32)
-
-    for i in range(len(train_params)):
-        for t in range(T_train):
-            lag = np.zeros(3) if t == 0 else train_obs[i, t - 1, :]
-            X_train[i, t, :] = np.concatenate([train_params[i], train_shocks[i, t, :], lag])
+    # Vectorized construction of X_train
+    # train_params: (N, 11) -> (N, T, 11)
+    # train_shocks: (N, T, 3)
+    # lags: (N, T, 3)
+    
+    N_train_actual = len(train_params)
+    lags_train = np.zeros((N_train_actual, T_train, 3), dtype=np.float32)
+    lags_train[:, 1:, :] = train_obs[:, :-1, :]
+    
+    X_train = np.concatenate([
+        np.tile(train_params[:, np.newaxis, :], (1, T_train, 1)),
+        train_shocks.astype(np.float32),
+        lags_train
+    ], axis=2)
+    Y_train = train_obs.astype(np.float32)
 
     X_mean = X_train.reshape(-1, 17).mean(axis=0)
     X_std = X_train.reshape(-1, 17).std(axis=0)
@@ -169,17 +185,21 @@ def generate_datasets(n_total: int = 60000,
     stats = {
         'X_mean': X_mean, 'X_std': X_std,
         'Y_mean': Y_mean, 'Y_std': Y_std,
+        'policy_holdout': policy_holdout,
     }
 
     def build_split(params_list, obs_list, shocks_list):
         N = len(params_list)
-        X = np.zeros((N, T_train, 17), dtype=np.float32)
-        Y = np.zeros((N, T_train, 3), dtype=np.float32)
-        for i in range(N):
-            for t in range(T_train):
-                lag = np.zeros(3) if t == 0 else obs_list[i, t - 1, :]
-                X[i, t, :] = np.concatenate([params_list[i], shocks_list[i, t, :], lag])
-            Y[i] = obs_list[i]
+        lags = np.zeros((N, T_train, 3), dtype=np.float32)
+        lags[:, 1:, :] = obs_list[:, :-1, :]
+        
+        X = np.concatenate([
+            np.tile(params_list[:, np.newaxis, :], (1, T_train, 1)),
+            shocks_list.astype(np.float32),
+            lags
+        ], axis=2)
+        Y = obs_list.astype(np.float32)
+        
         X = (X - X_mean) / X_std
         Y = (Y - Y_mean) / Y_std
         return X.astype(np.float32), Y.astype(np.float32)
@@ -216,6 +236,16 @@ def generate_datasets(n_total: int = 60000,
             'train_obs': train_obs, 'train_params': train_params,
             'val_obs': val_obs, 'val_params': val_params,
         }, f)
+    with open(cache_dir / 'metadata.pkl', 'wb') as f:
+        pickle.dump({
+            'policy_holdout': policy_holdout,
+            'T_sim': T_sim,
+            'burn_in': burn_in,
+            'n_train': n_train,
+            'n_val': n_val,
+            'n_test': n_test,
+            'seed': seed,
+        }, f)
 
     print(f'Data shapes: train={X_train_norm.shape}, val={X_val_norm.shape}, test={X_test_norm.shape}')
     print(f'Cached to {cache_dir}/')
@@ -223,34 +253,81 @@ def generate_datasets(n_total: int = 60000,
     return data, stats
 
 
-def load_and_prepare(cache_dir: str = './results/cache'):
+def load_and_prepare(cache_dir: str = './results/cache',
+                     policy_holdout: str = 'high-phi-pi'):
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(exist_ok=True)
     cache_file = cache_dir / 'normalized_data.pkl'
     stats_file = cache_dir / 'norm_stats.pkl'
     raw_file = cache_dir / 'raw_data.pkl'
+    metadata_file = cache_dir / 'metadata.pkl'
 
     if cache_file.exists() and stats_file.exists() and raw_file.exists():
-        print("Loading cached normalized data...")
-        with open(cache_file, 'rb') as f:
-            norm_data = pickle.load(f)
-        with open(stats_file, 'rb') as f:
-            stats = pickle.load(f)
-        with open(raw_file, 'rb') as f:
-            raw_data = pickle.load(f)
+        metadata = {}
+        if metadata_file.exists():
+            with open(metadata_file, 'rb') as f:
+                metadata = pickle.load(f)
+        cached_holdout = metadata.get('policy_holdout', 'none')
+        if cached_holdout != policy_holdout:
+            print(f"Cached data uses policy_holdout={cached_holdout}; regenerating for {policy_holdout}.")
+        else:
+            print("Loading cached normalised data...")
+            with open(cache_file, 'rb') as f:
+                norm_data = pickle.load(f)
+            with open(stats_file, 'rb') as f:
+                stats = pickle.load(f)
+            with open(raw_file, 'rb') as f:
+                raw_data = pickle.load(f)
 
-        data = dict(norm_data)
-        data['Y_test_raw'] = raw_data['test_obs']
-        data['params_test'] = raw_data['test_params']
-        data['Y_train_raw'] = raw_data['train_obs']
-        data['params_train'] = raw_data['train_params']
-        data['Y_val_raw'] = raw_data['val_obs']
-        data['params_val'] = raw_data['val_params']
-        return data, stats
+            data = dict(norm_data)
+            data['Y_test_raw'] = raw_data['test_obs']
+            data['params_test'] = raw_data['test_params']
+            data['Y_train_raw'] = raw_data['train_obs']
+            data['params_train'] = raw_data['train_params']
+            data['Y_val_raw'] = raw_data['val_obs']
+            data['params_val'] = raw_data['val_params']
+            stats['policy_holdout'] = cached_holdout
+            return data, stats
 
     print("Generating simulation data...")
-    data, stats = generate_datasets(cache_dir=str(cache_dir))
+    data, stats = generate_datasets(cache_dir=str(cache_dir),
+                                    policy_holdout=policy_holdout)
     return data, stats
+
+
+def build_y_only_dataset(data: dict, stats: dict):
+    """Build lag-only inputs for the y-only Transformer experiment."""
+    y_stats = {
+        'X_mean': stats['X_mean'][14:17],
+        'X_std': stats['X_std'][14:17],
+        'Y_mean': stats['Y_mean'],
+        'Y_std': stats['Y_std'],
+    }
+
+    def build_split(obs):
+        N, T, k = obs.shape
+        X = np.zeros((N, T, k), dtype=np.float32)
+        for i in range(N):
+            for t in range(T):
+                X[i, t] = 0.0 if t == 0 else obs[i, t - 1]
+        Y = obs.astype(np.float32)
+        X = (X - y_stats['X_mean']) / y_stats['X_std']
+        Y = (Y - y_stats['Y_mean']) / y_stats['Y_std']
+        return X.astype(np.float32), Y.astype(np.float32)
+
+    X_train, Y_train = build_split(data['Y_train_raw'])
+    X_val, Y_val = build_split(data['Y_val_raw'])
+    X_test, Y_test = build_split(data['Y_test_raw'])
+
+    y_data = {
+        'X_train': X_train, 'Y_train': Y_train,
+        'X_val': X_val, 'Y_val': Y_val,
+        'X_test': X_test, 'Y_test': Y_test,
+        'Y_test_raw': data['Y_test_raw'],
+        'Y_train_raw': data['Y_train_raw'],
+        'Y_val_raw': data['Y_val_raw'],
+    }
+    return y_data, y_stats
 
 
 if __name__ == '__main__':

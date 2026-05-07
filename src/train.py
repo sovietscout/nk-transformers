@@ -38,7 +38,7 @@ def train_model(data: dict,
     train_ds = NKDataset(data['X_train'], data['Y_train'])
     val_ds = NKDataset(data['X_val'], data['Y_val'])
 
-    # Use 0 workers for small datasets to avoid fork overhead
+    # Tiny subsets are faster without the extra DataLoader worker startup.
     n_workers = 0 if len(train_ds) < 1000 else 4
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               drop_last=True, num_workers=n_workers, pin_memory=True)
@@ -46,12 +46,15 @@ def train_model(data: dict,
                             num_workers=n_workers, pin_memory=True)
 
     from src.model import NKTransformer
+    input_dim = data['X_train'].shape[-1]
+    output_dim = data['Y_train'].shape[-1]
     model = NKTransformer(
         d_model=d_model, n_heads=n_heads, n_layers=n_layers,
-        ff_dim=ff_dim, dropout=dropout
+        ff_dim=ff_dim, dropout=dropout,
+        input_dim=input_dim, output_dim=output_dim,
     ).to(device)
 
-    # Compile for speedup if PyTorch >= 2.0
+    # On CUDA, torch.compile usually pays for itself over a full training run.
     if hasattr(torch, 'compile') and device.type == 'cuda':
         try:
             model = torch.compile(model, mode='reduce-overhead')
@@ -66,7 +69,7 @@ def train_model(data: dict,
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
 
-    # Use AMP for faster training on CUDA
+    # Mixed precision is only useful here when CUDA is doing the work.
     use_amp = device.type == 'cuda'
     scaler = torch.amp.GradScaler('cuda') if use_amp else None
 

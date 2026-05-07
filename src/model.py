@@ -1,7 +1,3 @@
-"""
-model.py — Causal Transformer for NK macroeconomic dynamics.
-"""
-
 import math
 import torch
 import torch.nn as nn
@@ -19,24 +15,16 @@ class PositionalEncoding(nn.Module):
                              * (-math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(1)  # (max_len, 1, d_model) — batch_first expects (T, B, D)
+        pe = pe.unsqueeze(1)
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        # x: (T, B, d_model)
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)
 
 
 class NKTransformer(nn.Module):
-    """Causal Transformer that predicts observables given params, shocks, and history.
-
-    Architecture:
-      - Input projection: Linear(17 -> d_model)
-      - Sinusoidal positional encoding
-      - TransformerEncoder with causal mask (prevents attending to future)
-      - Output head: Linear(d_model -> 3)
-    """
+    """Causal Transformer for the NK simulations."""
 
     def __init__(self,
                  d_model: int = 64,
@@ -58,7 +46,7 @@ class NKTransformer(nn.Module):
             dim_feedforward=ff_dim,
             dropout=dropout,
             activation='gelu',
-            batch_first=False,  # (T, B, D) convention
+            batch_first=False,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
         self.output_head = nn.Linear(d_model, output_dim)
@@ -80,20 +68,16 @@ class NKTransformer(nn.Module):
         """
         B, T, _ = src.shape
 
-        # Project to d_model
         x = self.input_proj(src)  # (B, T, d_model)
-        x = x.permute(1, 0, 2)    # (T, B, d_model)
+        x = x.permute(1, 0, 2)  # (T, B, d_model)
 
-        # Positional encoding
         x = self.pos_encoder(x)
 
-        # Causal mask: position t can only attend to positions <= t
+        # Each position can only look at the history available at that date.
         causal_mask = nn.Transformer.generate_square_subsequent_mask(T).to(src.device)
 
-        # Encode
         x = self.encoder(x, mask=causal_mask)  # (T, B, d_model)
 
-        # Output head
         x = x.permute(1, 0, 2)  # (B, T, d_model)
         out = self.output_head(x)  # (B, T, 3)
 
@@ -103,11 +87,9 @@ class NKTransformer(nn.Module):
                                 src: torch.Tensor,
                                 horizon: int,
                                 future_shocks: torch.Tensor = None) -> torch.Tensor:
-        """Generate multi-step forecast autoregressively.
+        """Forecast by feeding each prediction back in as the next lag.
 
         The input at time t is [params, shocks_t, obs_{t-1}], predicting obs_t.
-        To forecast forward, we first get the last predicted obs from the context,
-        then use it as the lag for each subsequent forecast step.
 
         Args:
             src: (B, T, input_dim) — context sequence up to time T
@@ -123,35 +105,30 @@ class NKTransformer(nn.Module):
         if future_shocks is None:
             future_shocks = torch.zeros(B, horizon, 3, device=src.device)
 
-        # Extract params (time-invariant, same at every position)
+        # Parameters are time-invariant, so the first token has the same values
+        # as every other token in the context.
         params = src[:, 0, :11]
 
-        # Run the model on the full context to get predictions for all time steps.
-        # At the last context step T-1, the model's output is the prediction of obs[T-1],
-        # since input[T-1] = [params, shocks[T-1], obs[T-2]].
         with torch.no_grad():
             context_out = self.forward(src)  # (B, T, 3)
 
-        # The last context prediction is obs[T-1] — this becomes the first lag
-        # for the forecast horizon (which predicts obs[T]).
+        # The final context prediction becomes the lag for the first forecast.
         prev_obs = context_out[:, -1, :]  # (B, 3) = predicted obs[T-1]
 
         predictions = []
         with torch.no_grad():
             for h in range(horizon):
                 shock = future_shocks[:, h, :]  # (B, 3)
-                # Build input: [params, shock, prev_obs]
                 inp = torch.cat([params, shock, prev_obs], dim=-1).unsqueeze(1)  # (B, 1, 17)
 
-                # Append to context and re-run through the model.
-                # We need the full sequence so the Transformer can attend to all
-                # previous positions (causal attention).
+                # Re-run on the growing sequence so attention sees the same kind
+                # of history it saw during training.
                 extended = torch.cat([src, inp], dim=1)  # (B, T+1+h, 17)
 
                 out = self.forward(extended)  # (B, T+1+h, 3)
-                pred = out[:, -1, :]  # (B, 3) — prediction of obs[T+h]
+                pred = out[:, -1, :]  # (B, 3) = prediction of obs[T+h]
 
                 predictions.append(pred)
-                prev_obs = pred  # feed predicted obs forward as the next lag
+                prev_obs = pred
 
         return torch.stack(predictions, dim=1)  # (B, horizon, 3)

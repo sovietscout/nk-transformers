@@ -1,15 +1,7 @@
-"""
-benchmarks.py — Reduced-form VAR and Bayesian VAR (Minnesota prior) benchmarks.
-"""
-
 import numpy as np
 from scipy import linalg
 from scipy.stats import invwishart
 
-
-# ---------------------------------------------------------------------------
-# OLS VAR
-# ---------------------------------------------------------------------------
 
 def fit_var_ols(Y: np.ndarray, p: int):
     """Fit VAR(p) to a single multivariable time series by OLS.
@@ -28,17 +20,14 @@ def fit_var_ols(Y: np.ndarray, p: int):
     if T <= p:
         raise ValueError(f"Not enough data: T={T}, p={p}")
 
-    # Build lag matrix
     n_obs = T - p
     Z = np.zeros((n_obs, k * p))
     for lag in range(p):
         Z[:, lag * k:(lag + 1) * k] = Y[p - lag - 1:T - lag - 1, :]
     Y_target = Y[p:, :]
 
-    # Add constant
     Z_aug = np.column_stack([Z, np.ones(n_obs)])
 
-    # OLS: (Z'Z)^{-1} Z'Y
     try:
         coeffs = linalg.solve(Z_aug.T @ Z_aug, Z_aug.T @ Y_target)
     except linalg.LinAlgError:
@@ -49,7 +38,6 @@ def fit_var_ols(Y: np.ndarray, p: int):
     residuals = Y_target - Z_aug @ coeffs
     Sigma = (residuals.T @ residuals) / (n_obs - k * p - 1)
 
-    # AIC
     logdet = np.linalg.slogdet(Sigma)[1]
     aic = n_obs * (k + logdet) + 2 * (k * k * p + k)
 
@@ -96,13 +84,12 @@ def var_forecast(B: np.ndarray, c: np.ndarray, Y_history: np.ndarray,
         (horizon, k) forecast
     """
     k = B.shape[0]
-    # Build lag buffer: most recent last
-    lags = Y_history[-p:].flatten()  # (k*p,), newest last
+    # Keep the lag vector in the same order used when fitting the VAR.
+    lags = Y_history[-p:].flatten()  # (k*p,)
     forecasts = np.zeros((horizon, k))
     for h in range(horizon):
         fc = B @ lags + c
         forecasts[h] = fc
-        # Update lag buffer
         lags = np.roll(lags, -k)
         lags[-k:] = fc
     return forecasts
@@ -125,14 +112,13 @@ def var_irf(B: np.ndarray, Sigma: np.ndarray, p: int,
         (horizon+1, k) IRF for all variables
     """
     k = B.shape[0]
-    # Cholesky: Sigma = L @ L.T, shock = L @ e where e has unit std at shock_index
+    # Shock the selected Cholesky innovation by one standard deviation.
     L = np.linalg.cholesky(Sigma)
     impact = L[:, shock_index] * shock_size
 
     irf = np.zeros((horizon + 1, k))
     irf[0, :] = impact
 
-    # State representation
     companion = np.zeros((k * p, k * p))
     companion[:k, :] = B
     if p > 1:
@@ -146,10 +132,6 @@ def var_irf(B: np.ndarray, Sigma: np.ndarray, p: int,
 
     return irf
 
-
-# ---------------------------------------------------------------------------
-# Bayesian VAR (Minnesota prior)
-# ---------------------------------------------------------------------------
 
 def bvar_minnesota_fit(Y: np.ndarray, p: int,
                        lambda1: float = 0.2,
@@ -179,28 +161,24 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
     if T_eff < k + 2:
         raise ValueError(f"Too few observations for BVAR: T_eff={T_eff}")
 
-    # Build design matrix and targets
     Z = np.zeros((T_eff, k * p))
     for lag in range(p):
         Z[:, lag * k:(lag + 1) * k] = Y[p - lag - 1:T - lag - 1, :]
     Y_target = Y[p:, :]
 
-    # Demean and don't add intercept for simplicity of Minnesota prior
+    # Work with demeaned data, then recover the intercept at the end.
     Y_mean = Y_target.mean(axis=0)
     Z_mean = Z.mean(axis=0)
     Y_dm = Y_target - Y_mean
     Z_dm = Z - Z_mean
 
-    # Compute residual variances for scaling
-    # Fit AR(p) to each variable individually to get residual variance
+    # Minnesota prior scaling uses each variable's own AR residual variance.
     sigma_sq = np.zeros(k)
     for i in range(k):
-        # Simple OLS: y_i on its own lags 1..p
         yi = Y_dm[:, i]
         Xi = np.zeros((T_eff, p))
         for lag_idx in range(p):
             Xi[:, lag_idx] = Y[p - lag_idx - 1:T - lag_idx - 1, i]
-        # Remove mean from Xi
         yi_dm = yi
         try:
             bi = linalg.solve(Xi.T @ Xi, Xi.T @ yi_dm)
@@ -212,8 +190,6 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
     if np.any(sigma_sq < 1e-10):
         sigma_sq = np.maximum(sigma_sq, 1e-10)
 
-    # Build prior precision for VAR coefficients (vec form)
-    # Each equation i has coefficients on all k variables at all p lags
     n_coeff = k * p  # per equation
     V_prior = np.zeros((k * n_coeff, k * n_coeff))
 
@@ -221,45 +197,31 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
         for j in range(k):
             for lag_idx in range(p):
                 row = i * n_coeff + lag_idx * k + j
-                col = row  # diagonal prior
-                # Tightness
+                col = row
                 lag_weight = 1.0 / (lag_idx + 1) ** lambda3
                 if i == j:
-                    # Own lag
                     if lag_idx == 0:
-                        # Own first lag — tight around random walk (1 if stationary adjusted)
                         V_prior[row, col] = (lambda1 ** 2) / sigma_sq[i]
                     else:
                         V_prior[row, col] = (lambda1 / lag_weight) ** 2 / sigma_sq[i]
                 else:
-                    # Cross-variable: standard Minnesota uses (σ_i / σ_j)² = σ²_i / σ²_j
-                    # so that variables with high own variance get looser priors on
-                    # coefficients of other variables, and vice versa.
+                    # Cross-variable shrinkage follows the usual Minnesota
+                    # scaling by relative residual variance.
                     V_prior[row, col] = (lambda1 * lambda2 / lag_weight) ** 2 * (sigma_sq[i] / sigma_sq[j])
 
     V_prior_inv = np.diag(1.0 / np.diag(V_prior))
 
-    # Prior mean: random walk for own first lag, zero otherwise
-    # But we work in demeaned data, so prior mean is zero
-    # Actually, in levels, prior mean B_prior where own first lag = I and rest = 0
+    # Own first lags are centred on a random walk; everything else is zero.
     B_prior = np.zeros((k, n_coeff))
     for i in range(k):
-        B_prior[i, i] = 1.0  # own first lag = 1
+        B_prior[i, i] = 1.0
 
-    # Bayesian update
-    # Z_dm is (T_eff, k*p), Y_dm is (T_eff, k)
-    # Posterior: vec(B) | Sigma ~ N(vec(B_hat), Sigma ⊗ (Z'Z + V_prior^-1)^(-1))
-    # Sigma ~ IW(S_post, nu_post)
-
-    # Prior for Sigma: very diffuse
     S_prior = np.diag(sigma_sq) * (k + 2) * 0.1
     nu_prior = k + 2
 
-    # OLS estimates
     ZtZ = Z_dm.T @ Z_dm
     ZtY = Z_dm.T @ Y_dm
 
-    # Posterior precision for B (conditional on Sigma)
     V_post_inv = ZtZ + V_prior_inv
     try:
         V_post = linalg.inv(V_post_inv)
@@ -269,26 +231,22 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
     B_hat = V_post @ (ZtY + V_prior_inv @ B_prior.T)  # (k*p, k)
     B_hat = B_hat.T  # (k, k*p)
 
-    # Residuals
     residuals = Y_dm - Z_dm @ B_hat.T
     S_post = S_prior + residuals.T @ residuals + \
              (B_hat - B_prior) @ V_prior_inv @ (B_hat - B_prior).T
 
     nu_post = nu_prior + T_eff
 
-    # Posterior mean of Sigma
     Sigma_post_mean = S_post / (nu_post - k - 1) if nu_post > k + 1 else S_post / nu_post
 
-    # Intercept
     intercept = Y_mean - B_hat @ Z_mean
 
-    # Generate posterior draws for IRF/error bands.
-    # Skip draws if V_post is ill-conditioned.
+    # Very ill-conditioned posteriors make the random draws unreliable; in that
+    # case the caller falls back to the posterior mean.
     n_draws = 500
     posterior_draws = []
     rng = np.random.RandomState(42)
 
-    # Use condition number: if > 1e12, matrix is nearly singular
     try:
         cond_num = np.linalg.cond(V_post)
         skip_draws = (cond_num > 1e12) or np.isnan(cond_num)
@@ -296,7 +254,7 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
         skip_draws = True
 
     if skip_draws:
-        pass  # skip draws, use posterior mean only
+        pass
     else:
         for _ in range(n_draws):
             try:
@@ -307,9 +265,8 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
                 B_draw = B_vec_draw.reshape(k, k * p)
                 posterior_draws.append((B_draw, Sigma_draw))
             except Exception:
-                break  # use whatever draws we have
+                break
 
-    # Full coefficient matrix including intercept
     B_post_mean = np.column_stack([B_hat, intercept])  # (k, k*p+1)
 
     return {
@@ -343,7 +300,7 @@ def bvar_forecast(bvar_result: dict, Y_history: np.ndarray, horizon: int,
 
     lags_init = Y_history[-p:].flatten()
 
-    # If no posterior draws, use posterior mean only
+    # Some small or ill-conditioned fits only have the posterior mean.
     if len(posterior_draws) == 0:
         B_coeff = B_post_mean[:, :-1]  # (k, k*p)
         intercept = B_post_mean[:, -1]  # (k,)
@@ -387,11 +344,10 @@ def bvar_irf(bvar_result: dict, horizon: int, shock_index: int = 0,
     posterior_draws = bvar_result['posterior_draws']
     B_post_mean = bvar_result['B_post_mean']
 
-    # If no posterior draws, use posterior mean only
+    # Some fits skip posterior draws when the covariance is too unstable.
     if len(posterior_draws) == 0:
         B_mean = B_post_mean[:, :-1]
         try:
-            # Use prior mean Sigma for impact
             Sigma_mean = bvar_result['Sigma_post_mean']
             L = np.linalg.cholesky(Sigma_mean)
             impact = L[:, shock_index] * shock_size
@@ -437,3 +393,60 @@ def bvar_irf(bvar_result: dict, horizon: int, shock_index: int = 0,
         irf_upper = np.percentile(all_irf, 95, axis=0)
 
     return irf_mean, irf_lower, irf_upper
+
+
+def fit_kalman_var(Y_context: np.ndarray, p: int = 1):
+    """Fit a reduced-form VAR(p) represented as a Kalman state model."""
+    B, c, Sigma, _ = fit_var_ols(Y_context, p=p)
+    k = Y_context.shape[1]
+    state_dim = k * p
+
+    A = np.zeros((state_dim, state_dim))
+    A[:k, :] = B
+    if p > 1:
+        A[k:, :k * (p - 1)] = np.eye(k * (p - 1))
+
+    intercept = np.zeros(state_dim)
+    intercept[:k] = c
+    H = np.zeros((k, state_dim))
+    H[:, :k] = np.eye(k)
+
+    Q = np.zeros((state_dim, state_dim))
+    Q[:k, :k] = Sigma + np.eye(k) * 1e-8
+    R = np.eye(k) * 1e-6
+
+    return {'A': A, 'c': intercept, 'H': H, 'Q': Q, 'R': R, 'p': p}
+
+
+def kalman_filter_forecast(model: dict, Y: np.ndarray, start_t: int = 50):
+    """One-step predictions from a fitted linear Gaussian VAR state model."""
+    A = model['A']
+    c = model['c']
+    H = model['H']
+    Q = model['Q']
+    R = model['R']
+    p = model['p']
+    T, k = Y.shape
+
+    preds = np.zeros((T, k))
+    preds[:start_t] = Y[:start_t]
+
+    state = Y[start_t - p:start_t].reshape(-1)
+    P = np.eye(len(state)) * 1e-4
+
+    for t in range(start_t, T):
+        state_pred = A @ state + c
+        P_pred = A @ P @ A.T + Q
+        y_pred = H @ state_pred
+        preds[t] = y_pred
+
+        innovation = Y[t] - y_pred
+        S = H @ P_pred @ H.T + R
+        try:
+            K = P_pred @ H.T @ np.linalg.inv(S)
+        except np.linalg.LinAlgError:
+            K = P_pred @ H.T @ np.linalg.pinv(S)
+        state = state_pred + K @ innovation
+        P = (np.eye(len(state)) - K @ H) @ P_pred
+
+    return preds

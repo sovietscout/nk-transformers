@@ -1,51 +1,28 @@
-"""
-evaluate.py — Evaluation metrics for all models on the holdout set.
-"""
-
 import numpy as np
 import torch
 from tqdm import tqdm
+from multiprocessing import Pool, cpu_count
 
 from src.benchmarks import (select_var_order, var_forecast, var_irf,
-                        bvar_minnesota_fit, bvar_forecast, bvar_irf)
+                        bvar_minnesota_fit, bvar_forecast, bvar_irf,
+                        fit_kalman_var, kalman_filter_forecast)
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def unnormalize(Y_norm: np.ndarray, stats: dict) -> np.ndarray:
-    """Convert normalized predictions back to original scale."""
+    """Convert normalised predictions back to original scale."""
     return Y_norm * stats['Y_std'] + stats['Y_mean']
 
 
 def compute_mse(pred: np.ndarray, true: np.ndarray):
-    """Mean squared error, averaged over all dimensions.
-
-    Args:
-        pred: (N, T, k) or (N, k)
-        true: same shape
-
-    Returns:
-        float: overall MSE
-        np.ndarray: per-variable MSE (k,)
-    """
+    """Mean squared error, averaged over all dimensions."""
     se = (pred - true) ** 2
     overall = se.mean()
-    per_var = se.mean(axis=tuple(range(se.ndim - 1)))  # averages over all but last dim
+    per_var = se.mean(axis=tuple(range(se.ndim - 1)))
     return overall, per_var
 
 
-# ---------------------------------------------------------------------------
-# 1. One-step-ahead MSE
-# ---------------------------------------------------------------------------
-
 def evaluate_one_step_mse(model, data: dict, stats: dict, device: str = 'cuda'):
-    """One-step-ahead MSE for the Transformer on test set.
-
-    The model sees [params, shocks_t, obs_{t-1}] and predicts obs_t.
-    This includes the full information set at time t.
-    """
+    """One-step-ahead MSE for the Transformer on test set."""
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     model.eval()
@@ -55,119 +32,119 @@ def evaluate_one_step_mse(model, data: dict, stats: dict, device: str = 'cuda'):
     N, T, _ = X_test.shape
 
     all_preds = np.zeros((N, T, 3))
+    batch_size = 128
     with torch.no_grad():
-        for i in tqdm(range(N), desc="One-step MSE"):
-            # Process full sequence
-            x_in = torch.from_numpy(X_test[i]).unsqueeze(0).to(device)  # (1, T, 17)
-            pred = model(x_in).cpu().numpy()[0]  # (T, 3)
-            all_preds[i] = pred
+        for i in tqdm(range(0, N, batch_size), desc="One-step MSE"):
+            end_i = min(i + batch_size, N)
+            x_in = torch.from_numpy(X_test[i:end_i]).to(device)
+            pred = model(x_in).cpu().numpy()
+            all_preds[i:end_i] = pred
 
     pred_unnorm = unnormalize(all_preds, stats)
     true_unnorm = unnormalize(Y_test, stats)
 
-    # MSE over the last 100 steps (after 50-step warm-up)
     start_t = 50
     overall, per_var = compute_mse(pred_unnorm[:, start_t:, :], true_unnorm[:, start_t:, :])
     return overall, per_var
 
 
+def _var_one_step_worker(args):
+    Y, p_max = args
+    T, k = Y.shape
+    pred = np.zeros_like(Y)
+    try:
+        p, B, c, Sigma, _ = select_var_order(Y, p_max=p_max)
+        for t in range(p, T):
+            lags = Y[t - p:t, :]
+            fc = B @ lags.flatten() + c
+            pred[t, :] = fc
+        pred[:p, :] = Y[:p, :]
+    except Exception:
+        pred[:] = Y
+    return pred
+
+
 def evaluate_var_one_step(data: dict, stats: dict):
-    """One-step-ahead MSE for OLS VAR (one VAR per test simulation)."""
-    Y_test_raw = data['Y_test_raw']  # (N, T, 3) raw observables
+    """One-step-ahead MSE for OLS VAR."""
+    Y_test_raw = data['Y_test_raw']
     N, T, k = Y_test_raw.shape
     p_max = 8
 
-    all_preds = np.zeros((N, T, 3))
+    with Pool(cpu_count()) as pool:
+        results = list(tqdm(pool.imap(_var_one_step_worker, [(Y_test_raw[i], p_max) for i in range(N)]),
+                            total=N, desc="VAR one-step MSE"))
 
-    for i in tqdm(range(N), desc="VAR one-step MSE"):
-        Y = Y_test_raw[i]  # (T, 3)
-        try:
-            p, B, c, Sigma, _ = select_var_order(Y, p_max=p_max)
-            # Generate one-step forecasts for t = p to T-1
-            for t in range(p, T):
-                lags = Y[t - p:t, :]
-                fc = B @ lags.flatten() + c
-                all_preds[i, t, :] = fc
-            # For t < p, copy true values
-            all_preds[i, :p, :] = Y[:p, :]
-        except Exception:
-            all_preds[i] = Y  # fallback: predict true
-
+    all_preds = np.stack(results)
     start_t = 50
     overall, per_var = compute_mse(all_preds[:, start_t:, :], Y_test_raw[:, start_t:, :])
     return overall, per_var
+
+
+def _bvar_one_step_worker(args):
+    Y = args
+    pred = np.zeros_like(Y)
+    try:
+        bvar_res = bvar_minnesota_fit(Y, p=4, lambda1=0.2, lambda2=0.5, lambda3=1.0)
+        B_hat = bvar_res['B_post_mean']
+        p = bvar_res['p']
+        B_coeff = B_hat[:, :-1]
+        intercept = B_hat[:, -1]
+        T = Y.shape[0]
+        for t in range(p, T):
+            lags = Y[t - p:t, :]
+            fc = B_coeff @ lags.flatten() + intercept
+            pred[t, :] = fc
+        pred[:p, :] = Y[:p, :]
+    except Exception:
+        pred[:] = Y
+    return pred
 
 
 def evaluate_bvar_one_step(data: dict, stats: dict):
     """One-step-ahead MSE for BVAR."""
     Y_test_raw = data['Y_test_raw']
-    N, T, k = Y_test_raw.shape
+    N = Y_test_raw.shape[0]
 
-    all_preds = np.zeros((N, T, 3))
+    with Pool(cpu_count()) as pool:
+        results = list(tqdm(pool.imap(_bvar_one_step_worker, [Y_test_raw[i] for i in range(N)]),
+                            total=N, desc="BVAR one-step MSE"))
 
-    for i in tqdm(range(N), desc="BVAR one-step MSE"):
-        Y = Y_test_raw[i]
-        try:
-            bvar_res = bvar_minnesota_fit(Y, p=4, lambda1=0.2, lambda2=0.5, lambda3=1.0)
-            B_hat = bvar_res['B_post_mean']
-            p = bvar_res['p']
-            B_coeff = B_hat[:, :-1]  # (k, k*p)
-            intercept = B_hat[:, -1]  # (k,)
-
-            for t in range(p, T):
-                lags = Y[t - p:t, :]
-                fc = B_coeff @ lags.flatten() + intercept
-                all_preds[i, t, :] = fc
-            all_preds[i, :p, :] = Y[:p, :]
-        except Exception:
-            all_preds[i] = Y
-
+    all_preds = np.stack(results)
     start_t = 50
     overall, per_var = compute_mse(all_preds[:, start_t:, :], Y_test_raw[:, start_t:, :])
     return overall, per_var
 
 
-# ---------------------------------------------------------------------------
-# 2. Multi-step-ahead MSE
-# ---------------------------------------------------------------------------
-
 def evaluate_multistep_mse(model, data: dict, stats: dict,
                            horizons: list = [1, 4, 8, 12, 20],
-                           device: str = 'cuda'):
-    """Multi-step-ahead MSE for the Transformer.
-
-    For each test simulation, use first 50 steps as context, forecast h steps
-    autoregressively.
-    """
+                           device: str = 'cuda',
+                           batch_size: int = 128):
+    """Multi-step-ahead MSE for the Transformer."""
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     model.eval()
 
     X_test = data['X_test']
     Y_test = data['Y_test']
+    N, T, _ = X_test.shape
 
     results = {}
     for h in horizons:
         all_preds = []
         all_trues = []
-        N, T, _ = X_test.shape
-        for i in tqdm(range(N), desc=f"Multi-step h={h}"):
-            # Use first 50 steps as context; forecast next h steps
+        for i in tqdm(range(0, N, batch_size), desc=f"Multi-step h={h}"):
+            end_i = min(i + batch_size, N)
             context_end = 50
             if context_end + h > T:
                 context_end = T - h
+            x_context = torch.from_numpy(X_test[i:end_i, :context_end]).to(device)
+            future_shocks = torch.from_numpy(X_test[i:end_i, context_end:context_end + h, 11:14]).to(device)
+            pred_norm = model.autoregressive_forecast(x_context, horizon=h, future_shocks=future_shocks)
+            all_preds.append(pred_norm.cpu().numpy())
+            all_trues.append(Y_test[i:end_i, context_end:context_end + h, :])
 
-            x_context = torch.from_numpy(X_test[i, :context_end]).unsqueeze(0).to(device)
-            future_shocks = torch.from_numpy(X_test[i, context_end:context_end + h, 11:14]).unsqueeze(0).to(device)
-            pred_norm = model.autoregressive_forecast(x_context, horizon=h, future_shocks=future_shocks)  # (1, h, 3)
-            pred = pred_norm.cpu().numpy()[0]
-            true = Y_test[i, context_end:context_end + h, :]
-
-            all_preds.append(pred)
-            all_trues.append(true)
-
-        all_preds = np.stack(all_preds)
-        all_trues = np.stack(all_trues)
+        all_preds = np.concatenate(all_preds, axis=0)
+        all_trues = np.concatenate(all_trues, axis=0)
         pred_unnorm = unnormalize(all_preds, stats)
         true_unnorm = unnormalize(all_trues, stats)
         overall, per_var = compute_mse(pred_unnorm, true_unnorm)
@@ -176,293 +153,299 @@ def evaluate_multistep_mse(model, data: dict, stats: dict,
     return results
 
 
+def _var_ms_worker(args):
+    Y, h = args
+    T, k = Y.shape
+    try:
+        p, B, c, Sigma, _ = select_var_order(Y, p_max=8)
+        start_t = max(50, p)
+        if start_t + h > T:
+            start_t = T - h
+        lags = Y[start_t - p:start_t, :]
+        fc = var_forecast(B, c, lags, p, h)
+        return fc, Y[start_t:start_t + h, :]
+    except Exception:
+        return np.zeros((h, 3)), np.zeros((h, 3))
+
+
 def evaluate_var_multistep(data: dict, stats: dict,
                            horizons: list = [1, 4, 8, 12, 20]):
     """Multi-step-ahead MSE for OLS VAR."""
     Y_test_raw = data['Y_test_raw']
-    N, T, k = Y_test_raw.shape
+    N = Y_test_raw.shape[0]
 
     results = {}
     for h in horizons:
-        all_preds = []
-        all_trues = []
-        for i in tqdm(range(N), desc=f"VAR multi-step h={h}"):
-            Y = Y_test_raw[i]
-            try:
-                p, B, c, Sigma, _ = select_var_order(Y, p_max=8)
-                start_t = max(50, p)
-                if start_t + h > T:
-                    start_t = T - h
-                lags = Y[start_t - p:start_t, :]
-                fc = var_forecast(B, c, lags, p, h)
-                all_preds.append(fc)
-                all_trues.append(Y[start_t:start_t + h, :])
-            except Exception:
-                all_preds.append(np.zeros((h, 3)))
-                all_trues.append(np.zeros((h, 3)))
-
-        all_preds = np.stack(all_preds)
-        all_trues = np.stack(all_trues)
+        with Pool(cpu_count()) as pool:
+            res = list(tqdm(pool.imap(_var_ms_worker, [(Y_test_raw[i], h) for i in range(N)]),
+                            total=N, desc=f"VAR multi-step h={h}"))
+        all_preds = np.stack([r[0] for r in res])
+        all_trues = np.stack([r[1] for r in res])
         overall, per_var = compute_mse(all_preds, all_trues)
         results[h] = (overall, per_var)
-
     return results
+
+
+def _bvar_ms_worker(args):
+    Y, h = args
+    T, k = Y.shape
+    try:
+        bvar_res = bvar_minnesota_fit(Y, p=4)
+        p = bvar_res['p']
+        start_t = max(50, p)
+        if start_t + h > T:
+            start_t = T - h
+        lags = Y[start_t - p:start_t, :]
+        fc_mean, _, _ = bvar_forecast(bvar_res, lags, h, n_draws=200)
+        return fc_mean, Y[start_t:start_t + h, :]
+    except Exception:
+        return np.zeros((h, 3)), np.zeros((h, 3))
 
 
 def evaluate_bvar_multistep(data: dict, stats: dict,
                             horizons: list = [1, 4, 8, 12, 20]):
     """Multi-step-ahead MSE for BVAR."""
     Y_test_raw = data['Y_test_raw']
-    N, T, k = Y_test_raw.shape
+    N = Y_test_raw.shape[0]
 
     results = {}
     for h in horizons:
-        all_preds = []
-        all_trues = []
-        for i in tqdm(range(N), desc=f"BVAR multi-step h={h}"):
-            Y = Y_test_raw[i]
-            try:
-                bvar_res = bvar_minnesota_fit(Y, p=4)
-                p = bvar_res['p']
-                start_t = max(50, p)
-                if start_t + h > T:
-                    start_t = T - h
-                lags = Y[start_t - p:start_t, :]
-                fc_mean, _, _ = bvar_forecast(bvar_res, lags, h, n_draws=200)
-                all_preds.append(fc_mean)
-                all_trues.append(Y[start_t:start_t + h, :])
-            except Exception:
-                all_preds.append(np.zeros((h, 3)))
-                all_trues.append(np.zeros((h, 3)))
-
-        all_preds = np.stack(all_preds)
-        all_trues = np.stack(all_trues)
+        with Pool(cpu_count()) as pool:
+            res = list(tqdm(pool.imap(_bvar_ms_worker, [(Y_test_raw[i], h) for i in range(N)]),
+                            total=N, desc=f"BVAR multi-step h={h}"))
+        all_preds = np.stack([r[0] for r in res])
+        all_trues = np.stack([r[1] for r in res])
         overall, per_var = compute_mse(all_preds, all_trues)
         results[h] = (overall, per_var)
-
     return results
 
 
-# ---------------------------------------------------------------------------
-# 3. IRF accuracy
-# ---------------------------------------------------------------------------
-
-def compute_transformer_irf(model, params: np.ndarray, shock: np.ndarray,
-                            horizon: int, device: str = 'cuda'):
-    """Compute IRF from the Transformer for a given shock.
-
-    Accumulates the growing sequence so the Transformer sees all previous
-    steps, not just the current single token. This matches how the model
-    is used during training (on full-length sequences).
-
-    Args:
-        model: trained Transformer
-        params: (11,) parameter vector (normalized)
-        shock: (3,) shock vector at impact
-        horizon: IRF horizon
-
-    Returns:
-        (horizon+1, 3) predicted IRF
-    """
+def compute_transformer_path_batch(model, params_raw: np.ndarray, shocks_raw: np.ndarray,
+                                   stats: dict, device: str = 'cuda'):
+    """Simulate batched Transformer paths."""
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     model.eval()
 
-    # Build the full IRF sequence step-by-step, feeding the entire
-    # sequence so far (like autoregressive_forecast).
-    H = horizon + 1
-    all_irf = np.zeros((H, 3))
-
-    # Initialize: at step 0, input = [params, shock, zeros] → output obs_0
-    shocks_all = np.zeros((H, 3))
-    shocks_all[0] = shock  # only impact period has a shock
-
-    # Build the sequence incrementally
-    seq = []
+    B, H, _ = shocks_raw.shape
+    preds_raw = np.zeros((B, H, 3))
+    
+    params_norm = (params_raw - stats['X_mean'][:11]) / stats['X_std'][:11]
+    shocks_norm = (shocks_raw - stats['X_mean'][11:14]) / stats['X_std'][11:14]
+    
+    params_norm_t = torch.from_numpy(params_norm).float().to(device).unsqueeze(1)
+    shocks_norm_t = torch.from_numpy(shocks_norm).float().to(device)
+    
+    current_seq = []
     with torch.no_grad():
         for h in range(H):
-            if len(seq) == 0:
-                # First step: no lagged observable, use zeros
-                lag = np.zeros(3)
+            if h == 0:
+                lag_raw = np.zeros((B, 3))
             else:
-                # Previous prediction is the lag for this step
-                lag = all_irf[h - 1, :]
+                lag_raw = preds_raw[:, h - 1, :]
+            
+            lag_norm = (lag_raw - stats['X_mean'][14:17]) / stats['X_std'][14:17]
+            lag_norm_t = torch.from_numpy(lag_norm).float().to(device).unsqueeze(1)
+            
+            inp = torch.cat([params_norm_t, shocks_norm_t[:, h:h+1, :], lag_norm_t], dim=-1)
+            current_seq.append(inp)
+            
+            seq_t = torch.cat(current_seq, dim=1)
+            pred_norm = model(seq_t)[:, -1, :].cpu().numpy()
+            preds_raw[:, h, :] = pred_norm * stats['Y_std'] + stats['Y_mean']
+            
+    return preds_raw
 
-            inp = np.concatenate([params, shocks_all[h], lag]).astype(np.float32)
-            seq.append(inp)
 
-            # Stack all previous time steps and run the model
-            seq_t = torch.from_numpy(np.stack(seq)).unsqueeze(0).to(device)  # (1, h+1, 17)
-            out = model(seq_t).cpu().numpy()[0, -1, :]  # (3,) — predict current time step
-            all_irf[h, :] = out
-
-    return all_irf  # (horizon+1, 3)
+def compute_transformer_irf_batch(model, params_raw: np.ndarray, shock_vecs: np.ndarray,
+                                  stats: dict, horizon: int, device: str = 'cuda'):
+    """Compute baseline-subtracted Transformer IRFs for a batch."""
+    B = params_raw.shape[0]
+    H = horizon + 1
+    shocks_shocked = np.zeros((B, H, 3))
+    shocks_shocked[:, 0, :] = shock_vecs
+    shocks_baseline = np.zeros((B, H, 3))
+    
+    path_shocked = compute_transformer_path_batch(model, params_raw, shocks_shocked, stats, device=device)
+    path_baseline = compute_transformer_path_batch(model, params_raw, shocks_baseline, stats, device=device)
+    return path_shocked - path_baseline
 
 
 def compute_dsge_irf(params_raw: dict, shock_type: str, horizon: int = 20):
-    """Compute true analytical IRF from the solved NK model.
-
-    Uses the policy matrix P from solve_nk_model to compute IRF
-    via forward simulation with one-time shock at t=0.
-    """
+    """Compute true analytical IRF from the solved NK model."""
     from src.simulator import solve_nk_model
-
-    sigma = params_raw['sigma']
-    beta = params_raw['beta']
-    kappa = params_raw['kappa']
-    phi_pi = params_raw['phi_pi']
-    phi_x = params_raw['phi_x']
-    rho_r = params_raw['rho_r']
-    rho_u = params_raw['rho_u']
-    rho_v = params_raw['rho_v']
-    sigma_r = params_raw['sigma_r']
-    sigma_u = params_raw['sigma_u']
-    sigma_v = params_raw['sigma_v']
-
     params = np.array([
-        sigma, beta, kappa, phi_pi, phi_x,
-        rho_r, rho_u, rho_v,
-        sigma_r, sigma_u, sigma_v,
+        params_raw['sigma'], params_raw['beta'], params_raw['kappa'], params_raw['phi_pi'], params_raw['phi_x'],
+        params_raw['rho_r'], params_raw['rho_u'], params_raw['rho_v'],
+        params_raw['sigma_r'], params_raw['sigma_u'], params_raw['sigma_v'],
     ])
-
     P = solve_nk_model(params)
     if P is None:
         return np.zeros((horizon + 1, 3)), np.zeros(3)
-
     if shock_type == 'r':
-        shock = np.array([sigma_r, 0.0, 0.0])
+        shock = np.array([params_raw['sigma_r'], 0.0, 0.0])
     elif shock_type == 'u':
-        shock = np.array([0.0, sigma_u, 0.0])
+        shock = np.array([0.0, params_raw['sigma_u'], 0.0])
     elif shock_type == 'v':
-        shock = np.array([0.0, 0.0, sigma_v])
+        shock = np.array([0.0, 0.0, params_raw['sigma_v']])
     else:
         raise ValueError(f"Unknown shock type: {shock_type}")
-
     H = horizon + 1
     s = np.zeros((H, 3))
     s[0] = shock
     for t in range(1, H):
-        s[t, 0] = rho_r * s[t - 1, 0]
-        s[t, 1] = rho_u * s[t - 1, 1]
-        s[t, 2] = rho_v * s[t - 1, 2]
-
+        s[t, 0] = params_raw['rho_r'] * s[t - 1, 0]
+        s[t, 1] = params_raw['rho_u'] * s[t - 1, 1]
+        s[t, 2] = params_raw['rho_v'] * s[t - 1, 2]
     y = (P @ s.T).T
     x_irf = y[:, 0]
     pi_irf = y[:, 1]
-    i_irf = phi_pi * pi_irf + phi_x * x_irf + s[:, 2]
-
-    irf = np.column_stack([x_irf, pi_irf, i_irf])
-    return irf, shock
+    i_irf = params_raw['phi_pi'] * pi_irf + params_raw['phi_x'] * x_irf + s[:, 2]
+    return np.column_stack([x_irf, pi_irf, i_irf]), shock
 
 
-def evaluate_irf_accuracy(model, data: dict, stats: dict,
-                          n_sims: int = 200, device: str = 'cuda'):
-    """Evaluate IRF accuracy for all models on a subset of test simulations.
+def _irf_accuracy_worker(args):
+    Y_i, params_i, stats, var_names = args
+    param_dict = {
+        'sigma': params_i[0], 'beta': params_i[1], 'kappa': params_i[2],
+        'phi_pi': params_i[3], 'phi_x': params_i[4],
+        'rho_r': params_i[5], 'rho_u': params_i[6], 'rho_v': params_i[7],
+        'sigma_r': params_i[8], 'sigma_u': params_i[9], 'sigma_v': params_i[10],
+    }
+    local_results = {m: {s: {v: {'mse': None, 'sign_acc': None} for v in var_names} for s in ['r', 'u', 'v']}
+                    for m in ['VAR', 'BVAR']}
+    true_irfs = {}
+    shock_vecs = {}
+    for s_idx, shock_type in enumerate(['r', 'u', 'v']):
+        true_irf, shock_vec = compute_dsge_irf(param_dict, shock_type, horizon=20)
+        true_irfs[shock_type] = true_irf
+        shock_vecs[shock_type] = shock_vec
+        try:
+            p, B, c, Sigma, _ = select_var_order(Y_i, p_max=8)
+            var_irf_result = var_irf(B, Sigma, p, horizon=20, shock_index=s_idx, shock_size=1.0)
+        except Exception:
+            var_irf_result = np.zeros((21, 3))
+        try:
+            bvar_res = bvar_minnesota_fit(Y_i, p=4)
+            bvar_irf_mean, _, _ = bvar_irf(bvar_res, horizon=20, shock_index=s_idx, shock_size=1.0)
+        except Exception:
+            bvar_irf_mean = np.zeros((21, 3))
+        for m_name, pred_irf in [('VAR', var_irf_result), ('BVAR', bvar_irf_mean)]:
+            for v_idx, v_name in enumerate(var_names):
+                mse = np.mean((pred_irf[:, v_idx] - true_irf[:, v_idx]) ** 2)
+                true_sign = np.sign(true_irf[:, v_idx])
+                pred_sign = np.sign(pred_irf[:, v_idx])
+                mask = true_sign != 0
+                sign_acc = (true_sign[mask] == pred_sign[mask]).mean() if mask.sum() > 0 else 1.0
+                local_results[m_name][shock_type][v_name] = {'mse': mse, 'sign_acc': sign_acc}
+    return local_results, true_irfs, shock_vecs
 
-    Returns:
-        dict with IRF-MSE and sign accuracy for each model, shock type, observable.
-    """
+
+def evaluate_irf_accuracy(model, data: dict, stats: dict, n_sims: int = 200, device: str = 'cuda'):
+    """Evaluate IRF accuracy for all models."""
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
-
-    # We need raw (unnormalized) data for VAR/BVAR IRF and true IRF
+    model = model.to(device)
+    model.eval()
     Y_test_raw = data['Y_test_raw']
     params_test_raw = data['params_test']
-
     n_sims = min(n_sims, len(Y_test_raw))
-
-    model_names = ['Transformer', 'VAR', 'BVAR']
     shock_types = ['r', 'u', 'v']
     var_names = ['x', 'pi', 'i']
+    model_names = ['Transformer', 'VAR', 'BVAR']
 
-    # Store: model -> shock -> observable -> list of (irf_mse, sign_acc)
+    with Pool(cpu_count()) as pool:
+        benchmark_res = list(tqdm(pool.imap(_irf_accuracy_worker, 
+                                            [(Y_test_raw[i], params_test_raw[i], stats, var_names) 
+                                             for i in range(n_sims)]),
+                                  total=n_sims, desc="IRF evaluation (Benchmarks)"))
+
     results = {m: {s: {v: {'mse': [], 'sign_acc': []} for v in var_names} for s in shock_types}
                for m in model_names}
+    for b_res, _, _ in benchmark_res:
+        for m in ['VAR', 'BVAR']:
+            for s in shock_types:
+                for v in var_names:
+                    results[m][s][v]['mse'].append(b_res[m][s][v]['mse'])
+                    results[m][s][v]['sign_acc'].append(b_res[m][s][v]['sign_acc'])
 
-    for i in tqdm(range(n_sims), desc="IRF evaluation"):
-        Y_i = Y_test_raw[i]
-        params_i = params_test_raw[i]
+    for s_idx, shock_type in enumerate(shock_types):
+        all_shock_vecs = np.stack([benchmark_res[i][2][shock_type] for i in range(n_sims)])
+        tf_irfs = compute_transformer_irf_batch(model, params_test_raw[:n_sims], all_shock_vecs,
+                                                stats, horizon=20, device=str(device))
+        for i in range(n_sims):
+            true_irf = benchmark_res[i][1][shock_type]
+            tf_irf = tf_irfs[i]
+            for v_idx, v_name in enumerate(var_names):
+                mse = np.mean((tf_irf[:, v_idx] - true_irf[:, v_idx]) ** 2)
+                true_sign = np.sign(true_irf[:, v_idx])
+                pred_sign = np.sign(tf_irf[:, v_idx])
+                mask = true_sign != 0
+                sign_acc = (true_sign[mask] == pred_sign[mask]).mean() if mask.sum() > 0 else 1.0
+                results['Transformer'][shock_type][v_name]['mse'].append(mse)
+                results['Transformer'][shock_type][v_name]['sign_acc'].append(sign_acc)
 
-        param_dict = {
-            'sigma': params_i[0], 'beta': params_i[1], 'kappa': params_i[2],
-            'phi_pi': params_i[3], 'phi_x': params_i[4],
-            'rho_r': params_i[5], 'rho_u': params_i[6], 'rho_v': params_i[7],
-            'sigma_r': params_i[8], 'sigma_u': params_i[9], 'sigma_v': params_i[10],
-        }
-
-        # Normalized params for Transformer
-        params_norm = (params_i - stats['X_mean'][:11]) / stats['X_std'][:11]
-
-        for s_idx, shock_type in enumerate(shock_types):
-            # True IRF (structural, from DSGE model)
-            true_irf, shock_vec = compute_dsge_irf(param_dict, shock_type, horizon=20)
-            true_irf_unnorm = true_irf  # already in original scale
-
-            # VAR/BVAR IRF: Note these use Cholesky identification which imposes
-            # a recursive ordering (monetary→inflation→output). This is arbitrary
-            # and has no economic basis relative to true structural shocks.
-            # Comparing Cholesky IRFs to true structural IRFs is therefore
-            # apples-to-oranges at the theoretical level.
-
-            # VAR IRF
-            try:
-                p, B, c, Sigma, _ = select_var_order(Y_i, p_max=8)
-                var_irf_result = var_irf(B, Sigma, p, horizon=20,
-                                         shock_index=s_idx, shock_size=1.0)
-            except Exception:
-                var_irf_result = np.zeros((21, 3))
-
-            # BVAR IRF
-            try:
-                bvar_res = bvar_minnesota_fit(Y_i, p=4)
-                bvar_irf_mean, _, _ = bvar_irf(bvar_res, horizon=20,
-                                               shock_index=s_idx, shock_size=1.0)
-            except Exception:
-                bvar_irf_mean = np.zeros((21, 3))
-
-            # Transformer IRF
-            shock_norm = shock_vec / stats['X_std'][11:14]  # normalize shock
-            tf_irf_norm = compute_transformer_irf(model, params_norm, shock_norm,
-                                                  horizon=20, device=str(device))
-            tf_irf_unnorm = tf_irf_norm * stats['Y_std'] + stats['Y_mean']
-
-            model_irfs = {
-                'Transformer': tf_irf_unnorm,
-                'VAR': var_irf_result,
-                'BVAR': bvar_irf_mean,
-            }
-
-            for m_name in model_names:
-                pred_irf = model_irfs[m_name]
-                for v_idx, v_name in enumerate(var_names):
-                    # IRF-MSE
-                    mse = np.mean((pred_irf[:, v_idx] - true_irf_unnorm[:, v_idx]) ** 2)
-                    results[m_name][shock_type][v_name]['mse'].append(mse)
-
-                    # Sign accuracy
-                    true_sign = np.sign(true_irf_unnorm[:, v_idx])
-                    pred_sign = np.sign(pred_irf[:, v_idx])
-                    # Only count where true sign is non-zero
-                    mask = true_sign != 0
-                    if mask.sum() > 0:
-                        sign_acc = (true_sign[mask] == pred_sign[mask]).mean()
-                    else:
-                        sign_acc = 1.0
-                    results[m_name][shock_type][v_name]['sign_acc'].append(sign_acc)
-
-    # Aggregate
     summary = {}
     for m_name in model_names:
         summary[m_name] = {}
         for s in shock_types:
             summary[m_name][s] = {}
             for v in var_names:
-                ms = results[m_name][s][v]['mse']
-                sa = results[m_name][s][v]['sign_acc']
                 summary[m_name][s][v] = {
-                    'irf_mse_mean': np.mean(ms),
-                    'irf_mse_std': np.std(ms),
-                    'sign_acc_mean': np.mean(sa),
-                    'sign_acc_std': np.std(sa),
+                    'irf_mse_mean': np.mean(results[m_name][s][v]['mse']),
+                    'irf_mse_std': np.std(results[m_name][s][v]['mse']),
+                    'sign_acc_mean': np.mean(results[m_name][s][v]['sign_acc']),
+                    'sign_acc_std': np.std(results[m_name][s][v]['sign_acc']),
                 }
-
     return summary
+
+
+def _kalman_worker(args):
+    Y, start_t = args
+    try:
+        kalman = fit_kalman_var(Y[:start_t], p=1)
+        return kalman_filter_forecast(kalman, Y, start_t=start_t)
+    except Exception:
+        return Y
+
+
+def evaluate_kalman_one_step(data: dict):
+    """One-step MSE for a reduced-form Kalman VAR."""
+    Y_test_raw = data['Y_test_raw']
+    N = Y_test_raw.shape[0]
+    start_t = 50
+    with Pool(cpu_count()) as pool:
+        results = list(tqdm(pool.imap(_kalman_worker, [(Y_test_raw[i], start_t) for i in range(N)]),
+                            total=N, desc="Kalman one-step MSE"))
+    all_preds = np.stack(results)
+    overall, per_var = compute_mse(all_preds[:, start_t:, :], Y_test_raw[:, start_t:, :])
+    return overall, per_var
+
+
+def collect_irf_paths(model, data: dict, stats: dict, sim_idx: int = 0, horizon: int = 20, device: str = 'cuda'):
+    """Return true, Transformer, VAR, and BVAR IRF paths for plotting."""
+    Y_i = data['Y_test_raw'][sim_idx]
+    params_i = data['params_test'][sim_idx]
+    param_dict = {
+        'sigma': params_i[0], 'beta': params_i[1], 'kappa': params_i[2],
+        'phi_pi': params_i[3], 'phi_x': params_i[4],
+        'rho_r': params_i[5], 'rho_u': params_i[6], 'rho_v': params_i[7],
+        'sigma_r': params_i[8], 'sigma_u': params_i[9], 'sigma_v': params_i[10],
+    }
+    paths = {}
+    for s_idx, shock_type in enumerate(['r', 'u', 'v']):
+        true_irf, shock_vec = compute_dsge_irf(param_dict, shock_type, horizon=horizon)
+        # Use single-batch call for Transformer
+        tf_irf = compute_transformer_irf_batch(model, params_i[None, :], shock_vec[None, :],
+                                               stats, horizon=horizon, device=device)[0]
+        try:
+            p, B, c, Sigma, _ = select_var_order(Y_i, p_max=8)
+            var_path = var_irf(B, Sigma, p, horizon=horizon, shock_index=s_idx, shock_size=1.0)
+        except Exception:
+            var_path = np.zeros_like(true_irf)
+        try:
+            bvar_res = bvar_minnesota_fit(Y_i, p=4)
+            bvar_path, _, _ = bvar_irf(bvar_res, horizon=horizon, shock_index=s_idx, shock_size=1.0)
+        except Exception:
+            bvar_path = np.zeros_like(true_irf)
+        paths[shock_type] = {'True': true_irf, 'Transformer': tf_irf, 'VAR': var_path, 'BVAR': bvar_path}
+    return paths
