@@ -321,13 +321,17 @@ def _main(cfg, total_t0):
         'total': time.perf_counter() - total_t0,
     }
 
+    experiment_config = {
+        'training': {k: v for k, v in cfg['training'].items() if k != 'compile'},
+        'experiment': cfg['experiment'],
+    }
     results_dict = {
         'one_step_results': one_step_results,
         'multistep_results': multistep_results,
         'irf_summary': irf_summary,
         'yonly_results': yonly_results,
         'sample_size_results': ss_results,
-        'config': cfg,
+        'config': experiment_config,
         'runtime_stats': runtime_stats,
     }
     results_path = cfg['paths']['cache'].parent / 'results.json'
