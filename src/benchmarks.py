@@ -23,7 +23,7 @@ def fit_var_ols(Y: np.ndarray, p: int):
     n_obs = T - p
     Z = np.zeros((n_obs, k * p))
     for lag in range(p):
-        Z[:, lag * k:(lag + 1) * k] = Y[p - lag - 1:T - lag - 1, :]
+        Z[:, lag * k : (lag + 1) * k] = Y[p - lag - 1 : T - lag - 1, :]
     Y_target = Y[p:, :]
 
     Z_aug = np.column_stack([Z, np.ones(n_obs)])
@@ -33,8 +33,8 @@ def fit_var_ols(Y: np.ndarray, p: int):
     except linalg.LinAlgError:
         coeffs = linalg.lstsq(Z_aug, Y_target)[0]
 
-    B = coeffs[:k * p, :].T  # (k, k*p)
-    c = coeffs[k * p, :]     # (k,)
+    B = coeffs[: k * p, :].T  # (k, k*p)
+    c = coeffs[k * p, :]  # (k,)
     residuals = Y_target - Z_aug @ coeffs
     Sigma = (residuals.T @ residuals) / (n_obs - k * p - 1)
 
@@ -67,12 +67,15 @@ def select_var_order(Y: np.ndarray, p_max: int = 8):
         except ValueError:
             break
     if best_result is None:
-        raise ValueError(f"VAR order selection failed: no valid lag found for data shape {Y.shape}")
+        raise ValueError(
+            f"VAR order selection failed: no valid lag found for data shape {Y.shape}"
+        )
     return (best_p, *best_result, best_aic)
 
 
-def var_forecast(B: np.ndarray, c: np.ndarray, Y_history: np.ndarray,
-                 p: int, horizon: int):
+def var_forecast(
+    B: np.ndarray, c: np.ndarray, Y_history: np.ndarray, p: int, horizon: int
+):
     """Generate h-step-ahead VAR forecasts.
 
     Args:
@@ -97,9 +100,14 @@ def var_forecast(B: np.ndarray, c: np.ndarray, Y_history: np.ndarray,
     return forecasts
 
 
-def var_irf(B: np.ndarray, Sigma: np.ndarray, p: int,
-            horizon: int = 20, shock_index: int = 0,
-            shock_size: float = 1.0):
+def var_irf(
+    B: np.ndarray,
+    Sigma: np.ndarray,
+    p: int,
+    horizon: int = 20,
+    shock_index: int = 0,
+    shock_size: float = 1.0,
+):
     """Compute IRF from Cholesky-identified VAR.
 
     Args:
@@ -124,7 +132,7 @@ def var_irf(B: np.ndarray, Sigma: np.ndarray, p: int,
     companion = np.zeros((k * p, k * p))
     companion[:k, :] = B
     if p > 1:
-        companion[k:, :k * (p - 1)] = np.eye(k * (p - 1))
+        companion[k:, : k * (p - 1)] = np.eye(k * (p - 1))
 
     state = np.zeros(k * p)
     state[:k] = impact
@@ -135,10 +143,13 @@ def var_irf(B: np.ndarray, Sigma: np.ndarray, p: int,
     return irf
 
 
-def bvar_minnesota_fit(Y: np.ndarray, p: int,
-                       lambda1: float = 0.2,
-                       lambda2: float = 0.5,
-                       lambda3: float = 1.0):
+def bvar_minnesota_fit(
+    Y: np.ndarray,
+    p: int,
+    lambda1: float = 0.2,
+    lambda2: float = 0.5,
+    lambda3: float = 1.0,
+):
     """Fit BVAR with Minnesota prior (Normal-inverse-Wishart conjugate).
 
     The prior mean for coefficient on own first lag is 1 (random walk),
@@ -165,7 +176,7 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
 
     Z = np.zeros((T_eff, k * p))
     for lag in range(p):
-        Z[:, lag * k:(lag + 1) * k] = Y[p - lag - 1:T - lag - 1, :]
+        Z[:, lag * k : (lag + 1) * k] = Y[p - lag - 1 : T - lag - 1, :]
     Y_target = Y[p:, :]
 
     # Work with demeaned data, then recover the intercept at the end.
@@ -180,7 +191,7 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
         yi = Y[p:, i]
         Xi = np.zeros((T_eff, p + 1))
         for lag_idx in range(p):
-            Xi[:, lag_idx] = Y[p - lag_idx - 1:T - lag_idx - 1, i]
+            Xi[:, lag_idx] = Y[p - lag_idx - 1 : T - lag_idx - 1, i]
         Xi[:, -1] = 1.0  # intercept
         try:
             bi = linalg.solve(Xi.T @ Xi, Xi.T @ yi)
@@ -199,7 +210,7 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
         lag_weight = 1.0 / (lag_idx + 1) ** lambda3
         for j in range(k):
             idx = lag_idx * k + j
-            # For conjugate BVAR, V_prior is (kp, kp). 
+            # For conjugate BVAR, V_prior is (kp, kp).
             # The Minnesota shrinkage for variable j at lag_idx.
             V_prior_diag[idx] = (lambda1 * lag_weight) ** 2 / sigma_sq[j]
 
@@ -229,15 +240,20 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
     B_hat = B_hat.T  # (k, k*p)
 
     residuals = Y_dm - Z_dm @ B_hat.T
-    S_post = S_prior + residuals.T @ residuals + \
-             (B_hat - B_prior) @ V_prior_inv @ (B_hat - B_prior).T
-    
+    S_post = (
+        S_prior
+        + residuals.T @ residuals
+        + (B_hat - B_prior) @ V_prior_inv @ (B_hat - B_prior).T
+    )
+
     # Force symmetry
     S_post = (S_post + S_post.T) / 2.0
 
     nu_post = nu_prior + T_eff
 
-    Sigma_post_mean = S_post / (nu_post - k - 1) if nu_post > k + 1 else S_post / nu_post
+    Sigma_post_mean = (
+        S_post / (nu_post - k - 1) if nu_post > k + 1 else S_post / nu_post
+    )
 
     intercept = Y_mean - B_hat @ Z_mean
 
@@ -261,7 +277,7 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
         try:
             Sigma_draw = invwishart.rvs(df=nu_post, scale=S_post, random_state=rng)
             L_Sigma = robust_sqrt(Sigma_draw)
-            
+
             # Matrix Normal draw: B = B_hat + L_V @ Z @ L_Sigma.T
             # Z is kp x k standard normal. B_hat is k x kp.
             # Here B_hat.T is kp x k.
@@ -274,17 +290,18 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
     B_post_mean = np.column_stack([B_hat, intercept])  # (k, k*p+1)
 
     return {
-        'B_post_mean': B_post_mean,
-        'Sigma_post_mean': Sigma_post_mean,
-        'posterior_draws': posterior_draws,
-        'p': p,
-        'S_post': S_post,
-        'nu_post': nu_post,
+        "B_post_mean": B_post_mean,
+        "Sigma_post_mean": Sigma_post_mean,
+        "posterior_draws": posterior_draws,
+        "p": p,
+        "S_post": S_post,
+        "nu_post": nu_post,
     }
 
 
-def bvar_forecast(bvar_result: dict, Y_history: np.ndarray, horizon: int,
-                  n_draws: int = 500):
+def bvar_forecast(
+    bvar_result: dict, Y_history: np.ndarray, horizon: int, n_draws: int = 500
+):
     """Generate h-step-ahead BVAR forecasts with posterior distribution.
 
     Args:
@@ -297,10 +314,10 @@ def bvar_forecast(bvar_result: dict, Y_history: np.ndarray, horizon: int,
         fc_lower: (horizon, k) 5th percentile
         fc_upper: (horizon, k) 95th percentile
     """
-    k = bvar_result['B_post_mean'].shape[0]
-    p = bvar_result['p']
-    posterior_draws = bvar_result['posterior_draws']
-    B_post_mean = bvar_result['B_post_mean']
+    k = bvar_result["B_post_mean"].shape[0]
+    p = bvar_result["p"]
+    posterior_draws = bvar_result["posterior_draws"]
+    B_post_mean = bvar_result["B_post_mean"]
 
     lags_init = Y_history[-p:][::-1].flatten()
 
@@ -334,8 +351,9 @@ def bvar_forecast(bvar_result: dict, Y_history: np.ndarray, horizon: int,
     return fc_mean, fc_lower, fc_upper
 
 
-def bvar_irf(bvar_result: dict, horizon: int, shock_index: int = 0,
-             shock_size: float = 1.0):
+def bvar_irf(
+    bvar_result: dict, horizon: int, shock_index: int = 0, shock_size: float = 1.0
+):
     """Compute IRF from BVAR posterior.
 
     Returns:
@@ -343,16 +361,16 @@ def bvar_irf(bvar_result: dict, horizon: int, shock_index: int = 0,
         irf_lower: (horizon+1, k)
         irf_upper: (horizon+1, k)
     """
-    k = bvar_result['B_post_mean'].shape[0]
-    p = bvar_result['p']
-    posterior_draws = bvar_result['posterior_draws']
-    B_post_mean = bvar_result['B_post_mean']
+    k = bvar_result["B_post_mean"].shape[0]
+    p = bvar_result["p"]
+    posterior_draws = bvar_result["posterior_draws"]
+    B_post_mean = bvar_result["B_post_mean"]
 
     # Some fits skip posterior draws when the covariance is too unstable.
     if len(posterior_draws) == 0:
         B_mean = B_post_mean[:, :-1]
         try:
-            Sigma_mean = bvar_result['Sigma_post_mean']
+            Sigma_mean = bvar_result["Sigma_post_mean"]
             L = np.linalg.cholesky(Sigma_mean)
             impact = L[:, shock_index] * shock_size
         except Exception:
@@ -364,7 +382,7 @@ def bvar_irf(bvar_result: dict, horizon: int, shock_index: int = 0,
         companion = np.zeros((k * p, k * p))
         companion[:k, :] = B_mean
         if p > 1:
-            companion[k:, :k * (p - 1)] = np.eye(k * (p - 1))
+            companion[k:, : k * (p - 1)] = np.eye(k * (p - 1))
 
         state = np.zeros(k * p)
         state[:k] = impact
@@ -384,7 +402,7 @@ def bvar_irf(bvar_result: dict, horizon: int, shock_index: int = 0,
             companion = np.zeros((k * p, k * p))
             companion[:k, :] = B_draw
             if p > 1:
-                companion[k:, :k * (p - 1)] = np.eye(k * (p - 1))
+                companion[k:, : k * (p - 1)] = np.eye(k * (p - 1))
 
             state = np.zeros(k * p)
             state[:k] = impact
@@ -408,7 +426,7 @@ def fit_kalman_var(Y_context: np.ndarray, p: int = 1):
     A = np.zeros((state_dim, state_dim))
     A[:k, :] = B
     if p > 1:
-        A[k:, :k * (p - 1)] = np.eye(k * (p - 1))
+        A[k:, : k * (p - 1)] = np.eye(k * (p - 1))
 
     intercept = np.zeros(state_dim)
     intercept[:k] = c
@@ -419,23 +437,23 @@ def fit_kalman_var(Y_context: np.ndarray, p: int = 1):
     Q[:k, :k] = Sigma + np.eye(k) * 1e-8
     R = np.eye(k) * 1e-6
 
-    return {'A': A, 'c': intercept, 'H': H, 'Q': Q, 'R': R, 'p': p}
+    return {"A": A, "c": intercept, "H": H, "Q": Q, "R": R, "p": p}
 
 
 def kalman_filter_forecast(model: dict, Y: np.ndarray, start_t: int = 50):
     """One-step predictions from a fitted linear Gaussian VAR state model."""
-    A = model['A']
-    c = model['c']
-    H = model['H']
-    Q = model['Q']
-    R = model['R']
-    p = model['p']
+    A = model["A"]
+    c = model["c"]
+    H = model["H"]
+    Q = model["Q"]
+    R = model["R"]
+    p = model["p"]
     T, k = Y.shape
 
     preds = np.zeros((T, k))
     preds[:start_t] = Y[:start_t]
 
-    state = Y[start_t - p:start_t][::-1].reshape(-1)
+    state = Y[start_t - p : start_t][::-1].reshape(-1)
     P = np.eye(len(state)) * 1e-4
 
     for t in range(start_t, T):

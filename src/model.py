@@ -11,30 +11,33 @@ class PositionalEncoding(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len).unsqueeze(1).float()
-        div_term = torch.exp(torch.arange(0, d_model, 2).float()
-                             * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0) # (1, max_len, d_model)
-        self.register_buffer('pe', pe)
+        pe = pe.unsqueeze(0)  # (1, max_len, d_model)
+        self.register_buffer("pe", pe)
 
     def forward(self, x):
         # x is (B, T, d_model)
-        x = x + self.pe[:, :x.size(1), :]
+        x = x + self.pe[:, : x.size(1), :]
         return self.dropout(x)
 
 
 class NKTransformer(nn.Module):
     """Causal Transformer for the NK simulations."""
 
-    def __init__(self,
-                 d_model: int = 64,
-                 n_heads: int = 4,
-                 n_layers: int = 4,
-                 ff_dim: int = 256,
-                 dropout: float = 0.1,
-                 input_dim: int = 17,
-                 output_dim: int = 3):
+    def __init__(
+        self,
+        d_model: int = 64,
+        n_heads: int = 4,
+        n_layers: int = 4,
+        ff_dim: int = 256,
+        dropout: float = 0.1,
+        input_dim: int = 17,
+        output_dim: int = 3,
+    ):
         super().__init__()
         self.d_model = d_model
 
@@ -46,7 +49,7 @@ class NKTransformer(nn.Module):
             nhead=n_heads,
             dim_feedforward=ff_dim,
             dropout=dropout,
-            activation='gelu',
+            activation="gelu",
             batch_first=True,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
@@ -81,11 +84,13 @@ class NKTransformer(nn.Module):
         return out
 
     @torch.compiler.disable
-    def autoregressive_forecast(self,
-                                src: torch.Tensor,
-                                horizon: int,
-                                future_shocks: torch.Tensor = None,
-                                true_lag: torch.Tensor = None) -> torch.Tensor:
+    def autoregressive_forecast(
+        self,
+        src: torch.Tensor,
+        horizon: int,
+        future_shocks: torch.Tensor = None,
+        true_lag: torch.Tensor = None,
+    ) -> torch.Tensor:
         """Forecast by feeding each prediction back in as the next lag.
 
         The input at time t is [params, shocks_t, obs_{t-1}], predicting obs_t.
@@ -121,7 +126,9 @@ class NKTransformer(nn.Module):
         with torch.no_grad():
             for h in range(horizon):
                 shock = future_shocks[:, h, :]  # (B, 3)
-                inp = torch.cat([params, shock, prev_obs], dim=-1).unsqueeze(1)  # (B, 1, 17)
+                inp = torch.cat([params, shock, prev_obs], dim=-1).unsqueeze(
+                    1
+                )  # (B, 1, 17)
 
                 # Re-run on the growing sequence so attention sees the same kind
                 # of history it saw during training.

@@ -21,49 +21,69 @@ class NKDataset(torch.utils.data.Dataset):
         return x, y
 
 
-def train_model(data: dict,
-                device: str = 'cuda',
-                d_model: int = 64,
-                n_heads: int = 4,
-                n_layers: int = 4,
-                ff_dim: int = 256,
-                dropout: float = 0.1,
-                batch_size: int = 128,
-                lr: float = 1e-3,
-                weight_decay: float = 1e-4,
-                epochs: int = 100,
-                patience: int = 10,
-                checkpoint_dir: str = './results/checkpoints',
-                silent: bool = False,
-                compile_model: bool = False):
+def train_model(
+    data: dict,
+    device: str = "cuda",
+    d_model: int = 64,
+    n_heads: int = 4,
+    n_layers: int = 4,
+    ff_dim: int = 256,
+    dropout: float = 0.1,
+    batch_size: int = 128,
+    lr: float = 1e-3,
+    weight_decay: float = 1e-4,
+    epochs: int = 100,
+    patience: int = 10,
+    checkpoint_dir: str = "./results/checkpoints",
+    silent: bool = False,
+    compile_model: bool = False,
+):
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    device = torch.device(device if torch.cuda.is_available() and device == 'cuda' else 'cpu')
+    device = torch.device(
+        device if torch.cuda.is_available() and device == "cuda" else "cpu"
+    )
 
     if not silent:
         print(f"  [*] Device: {device}")
 
-    train_ds = NKDataset(data['X_train'], data['Y_train'])
-    val_ds = NKDataset(data['X_val'], data['Y_val'])
+    train_ds = NKDataset(data["X_train"], data["Y_train"])
+    val_ds = NKDataset(data["X_val"], data["Y_val"])
 
     n_workers = 0 if len(train_ds) < 1000 else 3
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              drop_last=True, num_workers=n_workers, pin_memory=False)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
-                            num_workers=n_workers, pin_memory=False)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=n_workers,
+        pin_memory=False,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=n_workers,
+        pin_memory=False,
+    )
 
     from src.model import NKTransformer
-    input_dim = data['X_train'].shape[-1]
-    output_dim = data['Y_train'].shape[-1]
+
+    input_dim = data["X_train"].shape[-1]
+    output_dim = data["Y_train"].shape[-1]
     model = NKTransformer(
-        d_model=d_model, n_heads=n_heads, n_layers=n_layers,
-        ff_dim=ff_dim, dropout=dropout,
-        input_dim=input_dim, output_dim=output_dim,
+        d_model=d_model,
+        n_heads=n_heads,
+        n_layers=n_layers,
+        ff_dim=ff_dim,
+        dropout=dropout,
+        input_dim=input_dim,
+        output_dim=output_dim,
     ).to(device)
 
-    if compile_model and hasattr(torch, 'compile') and device.type == 'cuda':
+    if compile_model and hasattr(torch, "compile") and device.type == "cuda":
         try:
-            model = torch.compile(model, mode='reduce-overhead', dynamic=True)
+            model = torch.compile(model, mode="reduce-overhead", dynamic=True)
             if not silent:
                 print(f"  [*] torch.compile enabled")
         except Exception:
@@ -77,13 +97,13 @@ def train_model(data: dict,
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
 
-    use_amp = device.type == 'cuda'
-    scaler = torch.amp.GradScaler('cuda') if use_amp else None
+    use_amp = device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda") if use_amp else None
 
-    best_val_loss = float('inf')
+    best_val_loss = float("inf")
     best_epoch = 0
     epochs_no_improve = 0
-    history = {'train_loss': [], 'val_loss': []}
+    history = {"train_loss": [], "val_loss": []}
 
     for epoch in range(1, epochs + 1):
         t0 = time.perf_counter()
@@ -96,7 +116,7 @@ def train_model(data: dict,
             optimizer.zero_grad()
 
             if use_amp:
-                with torch.amp.autocast('cuda'):
+                with torch.amp.autocast("cuda"):
                     pred = model(X_batch)
                     loss = criterion(pred, Y_batch)
                 scaler.scale(loss).backward()
@@ -127,8 +147,8 @@ def train_model(data: dict,
                 val_loss += loss.item() * X_batch.size(0)
 
         val_loss /= len(val_ds)
-        history['train_loss'].append(train_loss)
-        history['val_loss'].append(val_loss)
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
 
         if not silent and epoch % 10 == 0:
             print(f"    Epoch {epoch:3d} | {train_loss:.4f} | {val_loss:.4f}")
@@ -137,7 +157,7 @@ def train_model(data: dict,
             best_val_loss = val_loss
             best_epoch = epoch
             epochs_no_improve = 0
-            torch.save(model.state_dict(), checkpoint_dir / 'best_model.pt')
+            torch.save(model.state_dict(), checkpoint_dir / "best_model.pt")
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= patience:
@@ -145,11 +165,13 @@ def train_model(data: dict,
                     print(f"    [!] Early stopping at epoch {epoch}")
                 break
 
-    model.load_state_dict(torch.load(checkpoint_dir / 'best_model.pt',
-                                     map_location='cpu', weights_only=True))
+    model.load_state_dict(
+        torch.load(
+            checkpoint_dir / "best_model.pt", map_location="cpu", weights_only=True
+        )
+    )
     model.eval()
     if not silent:
         print(f"    Converged epoch {best_epoch}, val {best_val_loss:.4f}")
-
 
     return model, history
