@@ -4,15 +4,13 @@ import json
 import logging
 import pickle
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
 import torch
 import tomllib
-import warnings
 
-from src.simulator import load_and_prepare, build_y_only_dataset
-from src.train import train_model
 from src.evaluate import (
     collect_irf_paths,
     evaluate_bvar_multistep,
@@ -24,6 +22,8 @@ from src.evaluate import (
     evaluate_var_multistep,
     evaluate_var_one_step,
 )
+from src.simulator import build_y_only_dataset, load_and_prepare
+from src.train import train_model
 from src.visualisation import (
     plot_forecast_horizon,
     plot_irf_grid,
