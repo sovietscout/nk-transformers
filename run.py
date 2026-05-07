@@ -7,8 +7,8 @@ import signal
 import sys
 import time
 import warnings
+from dataclasses import asdict
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import tomllib
@@ -223,6 +223,7 @@ def _main(cfg, total_t0):
 
     yonly_results = {}
     if not cfg.skip_yonly:
+        y_data, y_stats = build_y_only_dataset(data, stats)
         y_ckpt = cfg.paths.checkpoints / "y_only"
 
         if not cfg.skip_train:
