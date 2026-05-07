@@ -84,14 +84,14 @@ def var_forecast(B: np.ndarray, c: np.ndarray, Y_history: np.ndarray,
         (horizon, k) forecast
     """
     k = B.shape[0]
-    # Keep the lag vector in the same order used when fitting the VAR.
-    lags = Y_history[-p:].flatten()  # (k*p,)
+    # Keep the lag vector in the same order used when fitting the VAR: [Y_{t-1}, Y_{t-2}, ..., Y_{t-p}]
+    lags = Y_history[-p:][::-1].flatten()  # (k*p,)
     forecasts = np.zeros((horizon, k))
     for h in range(horizon):
         fc = B @ lags + c
         forecasts[h] = fc
-        lags = np.roll(lags, -k)
-        lags[-k:] = fc
+        lags = np.roll(lags, k)
+        lags[:k] = fc
     return forecasts
 
 
@@ -175,14 +175,14 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
     # Minnesota prior scaling uses each variable's own AR residual variance.
     sigma_sq = np.zeros(k)
     for i in range(k):
-        yi = Y_dm[:, i]
-        Xi = np.zeros((T_eff, p))
+        yi = Y[p:, i]
+        Xi = np.zeros((T_eff, p + 1))
         for lag_idx in range(p):
             Xi[:, lag_idx] = Y[p - lag_idx - 1:T - lag_idx - 1, i]
-        yi_dm = yi
+        Xi[:, -1] = 1.0  # intercept
         try:
-            bi = linalg.solve(Xi.T @ Xi, Xi.T @ yi_dm)
-            resid = yi_dm - Xi @ bi
+            bi = linalg.solve(Xi.T @ Xi, Xi.T @ yi)
+            resid = yi - Xi @ bi
             sigma_sq[i] = np.var(resid)
         except linalg.LinAlgError:
             sigma_sq[i] = 1.0
@@ -191,25 +191,17 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
         sigma_sq = np.maximum(sigma_sq, 1e-10)
 
     n_coeff = k * p  # per equation
-    V_prior = np.zeros((k * n_coeff, k * n_coeff))
+    V_prior_diag = np.zeros(n_coeff)
 
-    for i in range(k):
+    for lag_idx in range(p):
+        lag_weight = 1.0 / (lag_idx + 1) ** lambda3
         for j in range(k):
-            for lag_idx in range(p):
-                row = i * n_coeff + lag_idx * k + j
-                col = row
-                lag_weight = 1.0 / (lag_idx + 1) ** lambda3
-                if i == j:
-                    if lag_idx == 0:
-                        V_prior[row, col] = (lambda1 ** 2) / sigma_sq[i]
-                    else:
-                        V_prior[row, col] = (lambda1 / lag_weight) ** 2 / sigma_sq[i]
-                else:
-                    # Cross-variable shrinkage follows the usual Minnesota
-                    # scaling by relative residual variance.
-                    V_prior[row, col] = (lambda1 * lambda2 / lag_weight) ** 2 * (sigma_sq[i] / sigma_sq[j])
+            idx = lag_idx * k + j
+            # For conjugate BVAR, V_prior is (kp, kp). 
+            # The Minnesota shrinkage for variable j at lag_idx.
+            V_prior_diag[idx] = (lambda1 * lag_weight) ** 2 / sigma_sq[j]
 
-    V_prior_inv = np.diag(1.0 / np.diag(V_prior))
+    V_prior_inv = np.diag(1.0 / V_prior_diag)
 
     # Own first lags are centred on a random walk; everything else is zero.
     B_prior = np.zeros((k, n_coeff))
@@ -228,12 +220,18 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
     except linalg.LinAlgError:
         V_post = linalg.pinv(V_post_inv)
 
+    # Force symmetry to ensure numerical stability for Cholesky/Eigh
+    V_post = (V_post + V_post.T) / 2.0
+
     B_hat = V_post @ (ZtY + V_prior_inv @ B_prior.T)  # (k*p, k)
     B_hat = B_hat.T  # (k, k*p)
 
     residuals = Y_dm - Z_dm @ B_hat.T
     S_post = S_prior + residuals.T @ residuals + \
              (B_hat - B_prior) @ V_prior_inv @ (B_hat - B_prior).T
+    
+    # Force symmetry
+    S_post = (S_post + S_post.T) / 2.0
 
     nu_post = nu_prior + T_eff
 
@@ -241,31 +239,35 @@ def bvar_minnesota_fit(Y: np.ndarray, p: int,
 
     intercept = Y_mean - B_hat @ Z_mean
 
-    # Very ill-conditioned posteriors make the random draws unreliable; in that
-    # case the caller falls back to the posterior mean.
+    # Sample from the Matrix Normal-Inverse Wishart posterior
     n_draws = 500
     posterior_draws = []
     rng = np.random.RandomState(42)
 
-    try:
-        cond_num = np.linalg.cond(V_post)
-        skip_draws = (cond_num > 1e12) or np.isnan(cond_num)
-    except Exception:
-        skip_draws = True
+    def robust_sqrt(M):
+        """Matrix square root via Cholesky with Eigh fallback."""
+        try:
+            return np.linalg.cholesky(M)
+        except np.linalg.LinAlgError:
+            evals, evecs = np.linalg.eigh(M)
+            evals = np.maximum(evals, 1e-12)
+            return evecs @ np.diag(np.sqrt(evals))
 
-    if skip_draws:
-        pass
-    else:
-        for _ in range(n_draws):
-            try:
-                Sigma_draw = invwishart.rvs(df=nu_post, scale=S_post, random_state=rng)
-                B_vec_mean = B_hat.T.flatten()
-                B_cov = np.kron(Sigma_draw, V_post)
-                B_vec_draw = rng.multivariate_normal(B_vec_mean, B_cov)
-                B_draw = B_vec_draw.reshape(k, k * p)
-                posterior_draws.append((B_draw, Sigma_draw))
-            except Exception:
-                break
+    L_V = robust_sqrt(V_post)
+
+    for _ in range(n_draws):
+        try:
+            Sigma_draw = invwishart.rvs(df=nu_post, scale=S_post, random_state=rng)
+            L_Sigma = robust_sqrt(Sigma_draw)
+            
+            # Matrix Normal draw: B = B_hat + L_V @ Z @ L_Sigma.T
+            # Z is kp x k standard normal. B_hat is k x kp.
+            # Here B_hat.T is kp x k.
+            Z = rng.standard_normal((k * p, k))
+            B_draw_T = B_hat.T + L_V @ Z @ L_Sigma.T
+            posterior_draws.append((B_draw_T.T, Sigma_draw))
+        except Exception:
+            continue
 
     B_post_mean = np.column_stack([B_hat, intercept])  # (k, k*p+1)
 
@@ -298,7 +300,7 @@ def bvar_forecast(bvar_result: dict, Y_history: np.ndarray, horizon: int,
     posterior_draws = bvar_result['posterior_draws']
     B_post_mean = bvar_result['B_post_mean']
 
-    lags_init = Y_history[-p:].flatten()
+    lags_init = Y_history[-p:][::-1].flatten()
 
     # Some small or ill-conditioned fits only have the posterior mean.
     if len(posterior_draws) == 0:
@@ -309,8 +311,8 @@ def bvar_forecast(bvar_result: dict, Y_history: np.ndarray, horizon: int,
         for h in range(horizon):
             fc = B_coeff @ lags + intercept
             fc_mean[h] = fc
-            lags = np.roll(lags, -k)
-            lags[-k:] = fc
+            lags = np.roll(lags, k)
+            lags[:k] = fc
         fc_lower = fc_mean.copy()
         fc_upper = fc_mean.copy()
     else:
@@ -321,8 +323,8 @@ def bvar_forecast(bvar_result: dict, Y_history: np.ndarray, horizon: int,
             for h in range(horizon):
                 fc = B_draw @ lags + intercept
                 all_fc[d, h] = fc
-                lags = np.roll(lags, -k)
-                lags[-k:] = fc
+                lags = np.roll(lags, k)
+                lags[:k] = fc
         fc_mean = all_fc.mean(axis=0)
         fc_lower = np.percentile(all_fc, 5, axis=0)
         fc_upper = np.percentile(all_fc, 95, axis=0)
@@ -431,7 +433,7 @@ def kalman_filter_forecast(model: dict, Y: np.ndarray, start_t: int = 50):
     preds = np.zeros((T, k))
     preds[:start_t] = Y[:start_t]
 
-    state = Y[start_t - p:start_t].reshape(-1)
+    state = Y[start_t - p:start_t][::-1].reshape(-1)
     P = np.eye(len(state)) * 1e-4
 
     for t in range(start_t, T):

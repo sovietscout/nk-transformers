@@ -4,7 +4,7 @@ import torch.nn as nn
 
 
 class PositionalEncoding(nn.Module):
-    """Sinusoidal positional encoding."""
+    """Sinusoidal positional encoding (Batch First)."""
 
     def __init__(self, d_model: int, max_len: int = 500, dropout: float = 0.1):
         super().__init__()
@@ -15,11 +15,12 @@ class PositionalEncoding(nn.Module):
                              * (-math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(1)
+        pe = pe.unsqueeze(0) # (1, max_len, d_model)
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + self.pe[:x.size(0)]
+        # x is (B, T, d_model)
+        x = x + self.pe[:, :x.size(1), :]
         return self.dropout(x)
 
 
@@ -29,7 +30,7 @@ class NKTransformer(nn.Module):
     def __init__(self,
                  d_model: int = 64,
                  n_heads: int = 4,
-                 n_layers: int = 3,
+                 n_layers: int = 4,
                  ff_dim: int = 256,
                  dropout: float = 0.1,
                  input_dim: int = 17,
@@ -38,7 +39,7 @@ class NKTransformer(nn.Module):
         self.d_model = d_model
 
         self.input_proj = nn.Linear(input_dim, d_model)
-        self.pos_encoder = PositionalEncoding(d_model, max_len=200, dropout=dropout)
+        self.pos_encoder = PositionalEncoding(d_model, max_len=250, dropout=dropout)
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -46,7 +47,7 @@ class NKTransformer(nn.Module):
             dim_feedforward=ff_dim,
             dropout=dropout,
             activation='gelu',
-            batch_first=False,
+            batch_first=True,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
         self.output_head = nn.Linear(d_model, output_dim)
@@ -69,24 +70,22 @@ class NKTransformer(nn.Module):
         B, T, _ = src.shape
 
         x = self.input_proj(src)  # (B, T, d_model)
-        x = x.permute(1, 0, 2)  # (T, B, d_model)
-
         x = self.pos_encoder(x)
 
         # Each position can only look at the history available at that date.
         causal_mask = nn.Transformer.generate_square_subsequent_mask(T).to(src.device)
 
-        x = self.encoder(x, mask=causal_mask)  # (T, B, d_model)
-
-        x = x.permute(1, 0, 2)  # (B, T, d_model)
+        x = self.encoder(x, mask=causal_mask, is_causal=True)  # (B, T, d_model)
         out = self.output_head(x)  # (B, T, 3)
 
         return out
 
+    @torch.compiler.disable
     def autoregressive_forecast(self,
                                 src: torch.Tensor,
                                 horizon: int,
-                                future_shocks: torch.Tensor = None) -> torch.Tensor:
+                                future_shocks: torch.Tensor = None,
+                                true_lag: torch.Tensor = None) -> torch.Tensor:
         """Forecast by feeding each prediction back in as the next lag.
 
         The input at time t is [params, shocks_t, obs_{t-1}], predicting obs_t.
@@ -95,6 +94,7 @@ class NKTransformer(nn.Module):
             src: (B, T, input_dim) — context sequence up to time T
             horizon: number of future steps to forecast
             future_shocks: (B, horizon, 3) — future shock values (default: zeros)
+            true_lag: (B, 3) — optional true observation for step T (default: uses T-1 prediction)
 
         Returns:
             (B, horizon, 3) — predicted observables for steps T to T+horizon-1
@@ -109,11 +109,13 @@ class NKTransformer(nn.Module):
         # as every other token in the context.
         params = src[:, 0, :11]
 
-        with torch.no_grad():
-            context_out = self.forward(src)  # (B, T, 3)
-
-        # The final context prediction becomes the lag for the first forecast.
-        prev_obs = context_out[:, -1, :]  # (B, 3) = predicted obs[T-1]
+        if true_lag is not None:
+            prev_obs = true_lag
+        else:
+            with torch.no_grad():
+                context_out = self.forward(src)  # (B, T, 3)
+            # The final context prediction becomes the lag for the first forecast.
+            prev_obs = context_out[:, -1, :]  # (B, 3) = predicted obs[T-1]
 
         predictions = []
         with torch.no_grad():

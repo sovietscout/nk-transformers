@@ -91,7 +91,7 @@ def generate_datasets(n_total: int = 60000,
 
     def sample_params(region: str):
         sigma_val = 1.0 + 2.0 * rng.rand()
-        kappa_val = 0.05 + 0.45 * rng.rand()
+        kappa_val = 0.01 + 0.19 * rng.rand()
         if region == 'train':
             phi_pi_val = 1.1 + 1.3 * rng.rand()
         elif region == 'holdout':
@@ -100,11 +100,11 @@ def generate_datasets(n_total: int = 60000,
             phi_pi_val = 1.1 + 1.9 * rng.rand()
         phi_x_val = rng.rand()
         rho_r_val = 0.5 + 0.45 * rng.rand()
-        rho_u_val = 0.3 + 0.60 * rng.rand()
-        rho_v_val = 0.3 + 0.60 * rng.rand()
-        sigma_r_val = 0.005 + 0.025 * rng.rand()
-        sigma_u_val = 0.001 + 0.014 * rng.rand()
-        sigma_v_val = 0.001 + 0.014 * rng.rand()
+        rho_u_val = 0.3 + 0.50 * rng.rand()
+        rho_v_val = 0.3 + 0.40 * rng.rand()
+        sigma_r_val = 0.004 + 0.006 * rng.rand()
+        sigma_u_val = 0.001 + 0.007 * rng.rand()
+        sigma_v_val = 0.001 + 0.007 * rng.rand()
 
         return np.array([
             sigma_val, 0.99, kappa_val, phi_pi_val, phi_x_val,
@@ -128,7 +128,7 @@ def generate_datasets(n_total: int = 60000,
         max_attempts = count * 10
         region = region_for_split(split)
 
-        print(f'Generating {count} {split} draws (policy region: {region})...')
+        print(f'\t\t- Generating {count} {split} draws ({region})...')
         while draws < count and attempts < max_attempts:
             attempts += 1
             params = sample_params(region)
@@ -142,13 +142,9 @@ def generate_datasets(n_total: int = 60000,
             shocks_out[draws] = shocks
             draws += 1
 
-            if draws % 5000 == 0:
-                print(f'  {split}: {draws}/{count} (attempts: {attempts})')
-
         if draws < count:
             raise RuntimeError(f"Only generated {draws} {split} draws, but need {count}.")
 
-        print(f'Generated {draws} {split} draws in {attempts} attempts')
         return params_out, obs_out, shocks_out
 
     if n_total != n_train + n_val + n_test:
@@ -158,7 +154,7 @@ def generate_datasets(n_total: int = 60000,
     val_params, val_obs, val_shocks = draw_split(n_val, 'val')
     test_params, test_obs, test_shocks = draw_split(n_test, 'test')
 
-    # Vectorized construction of X_train
+    # Vectorised construction of X_train
     # train_params: (N, 11) -> (N, T, 11)
     # train_shocks: (N, T, 3)
     # lags: (N, T, 3)
@@ -222,7 +218,7 @@ def generate_datasets(n_total: int = 60000,
 
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(exist_ok=True)
-    with open(cache_dir / 'normalized_data.pkl', 'wb') as f:
+    with open(cache_dir / 'normalised_data.pkl', 'wb') as f:
         pickle.dump({
             'X_train': X_train_norm, 'Y_train': Y_train_norm,
             'X_val': X_val_norm, 'Y_val': Y_val_norm,
@@ -257,7 +253,7 @@ def load_and_prepare(cache_dir: str = './results/cache',
                      policy_holdout: str = 'high-phi-pi'):
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(exist_ok=True)
-    cache_file = cache_dir / 'normalized_data.pkl'
+    cache_file = cache_dir / 'normalised_data.pkl'
     stats_file = cache_dir / 'norm_stats.pkl'
     raw_file = cache_dir / 'raw_data.pkl'
     metadata_file = cache_dir / 'metadata.pkl'
@@ -269,9 +265,9 @@ def load_and_prepare(cache_dir: str = './results/cache',
                 metadata = pickle.load(f)
         cached_holdout = metadata.get('policy_holdout', 'none')
         if cached_holdout != policy_holdout:
-            print(f"Cached data uses policy_holdout={cached_holdout}; regenerating for {policy_holdout}.")
+            print(f"\t\t[!] Cache mismatch ({cached_holdout} vs {policy_holdout}). Regenerating...")
         else:
-            print("Loading cached normalised data...")
+            print("\t\t- Cache hit: Loading normalised buffers...")
             with open(cache_file, 'rb') as f:
                 norm_data = pickle.load(f)
             with open(stats_file, 'rb') as f:
@@ -289,7 +285,7 @@ def load_and_prepare(cache_dir: str = './results/cache',
             stats['policy_holdout'] = cached_holdout
             return data, stats
 
-    print("Generating simulation data...")
+    print("\t\t- Cache miss: Initialising generator...")
     data, stats = generate_datasets(cache_dir=str(cache_dir),
                                     policy_holdout=policy_holdout)
     return data, stats

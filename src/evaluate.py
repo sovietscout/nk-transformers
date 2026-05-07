@@ -8,7 +8,7 @@ from src.benchmarks import (select_var_order, var_forecast, var_irf,
                         fit_kalman_var, kalman_filter_forecast)
 
 
-def unnormalize(Y_norm: np.ndarray, stats: dict) -> np.ndarray:
+def unnormalise(Y_norm: np.ndarray, stats: dict) -> np.ndarray:
     """Convert normalised predictions back to original scale."""
     return Y_norm * stats['Y_std'] + stats['Y_mean']
 
@@ -40,8 +40,8 @@ def evaluate_one_step_mse(model, data: dict, stats: dict, device: str = 'cuda'):
             pred = model(x_in).cpu().numpy()
             all_preds[i:end_i] = pred
 
-    pred_unnorm = unnormalize(all_preds, stats)
-    true_unnorm = unnormalize(Y_test, stats)
+    pred_unnorm = unnormalise(all_preds, stats)
+    true_unnorm = unnormalise(Y_test, stats)
 
     start_t = 50
     overall, per_var = compute_mse(pred_unnorm[:, start_t:, :], true_unnorm[:, start_t:, :])
@@ -55,7 +55,7 @@ def _var_one_step_worker(args):
     try:
         p, B, c, Sigma, _ = select_var_order(Y, p_max=p_max)
         for t in range(p, T):
-            lags = Y[t - p:t, :]
+            lags = Y[t - p:t, :][::-1]
             fc = B @ lags.flatten() + c
             pred[t, :] = fc
         pred[:p, :] = Y[:p, :]
@@ -91,7 +91,7 @@ def _bvar_one_step_worker(args):
         intercept = B_hat[:, -1]
         T = Y.shape[0]
         for t in range(p, T):
-            lags = Y[t - p:t, :]
+            lags = Y[t - p:t, :][::-1]
             fc = B_coeff @ lags.flatten() + intercept
             pred[t, :] = fc
         pred[:p, :] = Y[:p, :]
@@ -139,14 +139,21 @@ def evaluate_multistep_mse(model, data: dict, stats: dict,
                 context_end = T - h
             x_context = torch.from_numpy(X_test[i:end_i, :context_end]).to(device)
             future_shocks = torch.from_numpy(X_test[i:end_i, context_end:context_end + h, 11:14]).to(device)
-            pred_norm = model.autoregressive_forecast(x_context, horizon=h, future_shocks=future_shocks)
+            
+            # Use the true observed lag for the first forecast step to ensure 
+            # a fair comparison with the VAR benchmarks.
+            true_lag = torch.from_numpy(X_test[i:end_i, context_end, 14:17]).to(device)
+            
+            pred_norm = model.autoregressive_forecast(x_context, horizon=h, 
+                                                      future_shocks=future_shocks,
+                                                      true_lag=true_lag)
             all_preds.append(pred_norm.cpu().numpy())
             all_trues.append(Y_test[i:end_i, context_end:context_end + h, :])
 
         all_preds = np.concatenate(all_preds, axis=0)
         all_trues = np.concatenate(all_trues, axis=0)
-        pred_unnorm = unnormalize(all_preds, stats)
-        true_unnorm = unnormalize(all_trues, stats)
+        pred_unnorm = unnormalise(all_preds, stats)
+        true_unnorm = unnormalise(all_trues, stats)
         overall, per_var = compute_mse(pred_unnorm, true_unnorm)
         results[h] = (overall, per_var)
 

@@ -26,7 +26,7 @@ plt.rcParams.update({
 
 OBS_NAMES = ['Output Gap ($x_t$)', 'Inflation ($\\pi_t$)', 'Interest Rate ($i_t$)']
 OBS_SHORT = ['x', 'π', 'i']
-COLORS = {
+COLOURS = {
     'True': '#111827',
     'Transformer': '#b42318',
     'VAR': '#2563eb',
@@ -80,7 +80,7 @@ def save_fig(fig, save_path):
     ensure_dir(os.path.dirname(save_path))
     fig.savefig(save_path)
     plt.close(fig)
-    print(f"Saved: {save_path}")
+    print(f"\t\t[+] Exported: {save_path}")
 
 
 def plot_trajectory_overlay(data: dict, stats: dict, model, save_path: str,
@@ -104,9 +104,9 @@ def plot_trajectory_overlay(data: dict, stats: dict, model, save_path: str,
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5.2), constrained_layout=True)
     for ax, obs_idx, name in zip(axes, range(3), OBS_NAMES):
-        ax.plot(range(T), true[:, obs_idx], color=COLORS['True'],
+        ax.plot(range(T), true[:, obs_idx], color=COLOURS['True'],
                 linestyle=LINESTYLES['True'], linewidth=LINEWIDTHS['True'], label='True')
-        ax.plot(range(T), pred[:, obs_idx], color=COLORS['Transformer'],
+        ax.plot(range(T), pred[:, obs_idx], color=COLOURS['Transformer'],
                 linestyle=LINESTYLES['Transformer'], linewidth=LINEWIDTHS['Transformer'],
                 label='Transformer')
         format_axis(ax, xlabel='Quarter', ylabel=name)
@@ -151,16 +151,16 @@ def plot_all_model_trajectories(data: dict, stats: dict, model,
         for col, (obs_idx, name) in enumerate(zip(range(3), OBS_SHORT)):
             ax = axes[row][col] if len(sim_indices) > 1 else axes[col]
             ax.plot(range(T), true[:, obs_idx], linestyle=LINESTYLES['True'],
-                    color=COLORS['True'], linewidth=LINEWIDTHS['True'], label='True')
+                    color=COLOURS['True'], linewidth=LINEWIDTHS['True'], label='True')
             ax.plot(range(T), tf_preds[sim_idx][:, obs_idx],
-                    linestyle=LINESTYLES['Transformer'], color=COLORS['Transformer'],
+                    linestyle=LINESTYLES['Transformer'], color=COLOURS['Transformer'],
                     linewidth=LINEWIDTHS['Transformer'], label='Transformer')
             if var_pred.any():
                 ax.plot(range(T), var_pred[:, obs_idx], linestyle=LINESTYLES['VAR'],
-                        color=COLORS['VAR'], linewidth=LINEWIDTHS['VAR'], label='VAR')
+                        color=COLOURS['VAR'], linewidth=LINEWIDTHS['VAR'], label='VAR')
             if bvar_pred.any():
                 ax.plot(range(T), bvar_pred[:, obs_idx], linestyle=LINESTYLES['BVAR'],
-                        color=COLORS['BVAR'], linewidth=LINEWIDTHS['BVAR'], label='BVAR')
+                        color=COLOURS['BVAR'], linewidth=LINEWIDTHS['BVAR'], label='BVAR')
 
             ax.set_title(f'{name} (Sim {sim_idx})')
             format_axis(ax, xlabel='Quarter', ylabel='Response' if col == 0 else None)
@@ -211,14 +211,14 @@ def plot_reduced_form_trajectory_overlay(data: dict, stats: dict, model,
     fig, axes = plt.subplots(1, 3, figsize=(18, 5.2), constrained_layout=True)
     for ax, obs_idx, name in zip(axes, range(3), OBS_NAMES):
         ax.plot(range(T), Y[:, obs_idx], linestyle=LINESTYLES['True'],
-                color=COLORS['True'], linewidth=LINEWIDTHS['True'], label='True')
+                color=COLOURS['True'], linewidth=LINEWIDTHS['True'], label='True')
         ax.plot(range(T), tf_pred[:, obs_idx], linestyle=LINESTYLES['Transformer'],
-                color=COLORS['Transformer'], linewidth=LINEWIDTHS['Transformer'],
+                color=COLOURS['Transformer'], linewidth=LINEWIDTHS['Transformer'],
                 label='Transformer')
         ax.plot(range(T), var_pred[:, obs_idx], linestyle=LINESTYLES['VAR'],
-                color=COLORS['VAR'], linewidth=LINEWIDTHS['VAR'], label='VAR')
+                color=COLOURS['VAR'], linewidth=LINEWIDTHS['VAR'], label='VAR')
         ax.plot(range(T), bvar_pred[:, obs_idx], linestyle=LINESTYLES['BVAR'],
-                color=COLORS['BVAR'], linewidth=LINEWIDTHS['BVAR'], label='BVAR')
+                color=COLOURS['BVAR'], linewidth=LINEWIDTHS['BVAR'], label='BVAR')
         format_axis(ax, xlabel='Quarter', ylabel=name)
         ax.set_xlim(0, T)
         ax.margins(x=0.01, y=0.16)
@@ -250,7 +250,7 @@ def plot_irf_grid(irf_results: dict, save_path: str):
                     val = irf_results[m_name][shock_type][v_name]['irf_mse_mean']
                     vals.append(val)
                     ax.bar(model_names.index(m_name), val,
-                           color=COLORS[m_name], alpha=0.88, width=0.62,
+                           color=COLOURS[m_name], alpha=0.88, width=0.62,
                            label=m_name if v_col == 0 and s_row == 0 else "")
             ax.set_title(f'{shock_label} -> {OBS_SHORT[v_col]}')
             ax.set_xticks(range(len(model_names)))
@@ -278,7 +278,7 @@ def plot_irf_paths(irf_paths: dict, save_path: str):
             ax = axes[row][col]
             for model_name, path in irf_paths.get(shock_type, {}).items():
                 ax.plot(path[:, col], linestyle=LINESTYLES.get(model_name, '-'),
-                        color=COLORS.get(model_name, 'grey'),
+                        color=COLOURS.get(model_name, 'grey'),
                         linewidth=LINEWIDTHS.get(model_name, 2.0),
                         label=model_name if row == 0 and col == 0 else None)
             ax.axhline(0, color='#6b7280', linewidth=0.9, alpha=0.55)
@@ -298,11 +298,11 @@ def plot_learning_curve(sample_sizes: list,
     """Plot MSE vs. training sample size (log-log) for all methods."""
     fig, ax = plt.subplots(figsize=(10.5, 7.2), constrained_layout=True)
 
-    ax.loglog(sample_sizes, tf_mse, 'o-', color=COLORS['Transformer'],
+    ax.loglog(sample_sizes, tf_mse, 'o-', color=COLOURS['Transformer'],
               linewidth=LINEWIDTHS['Transformer'], markersize=8, label='Transformer')
-    ax.loglog(sample_sizes, var_mse, 's--', color=COLORS['VAR'],
+    ax.loglog(sample_sizes, var_mse, 's--', color=COLOURS['VAR'],
               linewidth=LINEWIDTHS['VAR'], markersize=8, label='OLS VAR')
-    ax.loglog(sample_sizes, bvar_mse, '^-.', color=COLORS['BVAR'],
+    ax.loglog(sample_sizes, bvar_mse, '^-.', color=COLOURS['BVAR'],
               linewidth=LINEWIDTHS['BVAR'], markersize=8, label='BVAR (Minnesota)')
 
     format_axis(ax, xlabel='Number of training simulations ($N$)', ylabel='Test MSE')
@@ -327,7 +327,7 @@ def plot_forecast_horizon(mses: dict, save_path: str):
                   for h in horizons]
         ax.semilogy(horizons, values, marker='o',
                     linestyle=LINESTYLES.get(m_name, '-'),
-                    color=COLORS.get(m_name, 'grey'),
+                    color=COLOURS.get(m_name, 'grey'),
                     linewidth=LINEWIDTHS.get(m_name, 2.0),
                     markersize=8, label=m_name)
 
@@ -341,67 +341,62 @@ def plot_forecast_horizon(mses: dict, save_path: str):
 
 def print_table1(one_step_results: dict):
     """Table 1: One-step-ahead MSE by model and observable."""
-    print("\n" + "=" * 80)
-    print("TABLE 1: One-Step-Ahead MSE by Model and Observable")
-    print("=" * 80)
-    header = f"{'Model':<15} {'x':>12} {'π':>12} {'i':>12} {'Overall':>12}"
+    print("\n\t[>] Table 1: One-Step-Ahead MSE by Model")
+    header = f"\t\t{'Model':<15} | {'x':>10} | {'π':>10} | {'i':>10} | {'Overall':>10}"
     print(header)
-    print("-" * 63)
+    print("\t\t" + "-" * 63)
 
     for m_name in ['Transformer', 'VAR', 'BVAR']:
         if m_name in one_step_results:
             overall, per_var = one_step_results[m_name]
-            print(f"{m_name:<15} {per_var[0]:>12.6f} {per_var[1]:>12.6f} "
-                  f"{per_var[2]:>12.6f} {overall:>12.6f}")
-    print()
+            print(f"\t\t{m_name:<15} | {per_var[0]:>10.6f} | {per_var[1]:>10.6f} | "
+                  f"{per_var[2]:>10.6f} | {overall:>10.6f}")
 
 
 def print_table2(multistep_results: dict):
     """Table 2: Multi-step-ahead MSE by model and horizon."""
-    print("\n" + "=" * 80)
-    print("TABLE 2: Multi-Step-Ahead MSE by Model and Horizon")
-    print("=" * 80)
+    print("\n\t[>] Table 2: Multi-Step-Ahead MSE by Horizon")
 
     all_horizons = set()
     for m_res in multistep_results.values():
         all_horizons.update(m_res.keys())
     horizons = sorted(all_horizons)
 
-    header = f"{'Model':<15}"
+    header = f"\t\t{'Model':<15} |"
     for h in horizons:
-        header += f" {'h='+str(h):>12}"
+        header += f" {'h='+str(h):>10} |"
     print(header)
-    print("-" * (15 + 13 * len(horizons)))
+    print("\t\t" + "-" * (16 + 13 * len(horizons)))
 
     for m_name in ['Transformer', 'VAR', 'BVAR']:
         if m_name in multistep_results:
-            row = f"{m_name:<15}"
+            row = f"\t\t{m_name:<15} |"
             for h in horizons:
                 if h in multistep_results[m_name]:
-                    row += f" {multistep_results[m_name][h][0]:>12.6f}"
+                    val = multistep_results[m_name][h]
+                    val = val[0] if isinstance(val, tuple) else val
+                    row += f" {val:>10.6f} |"
                 else:
-                    row += f" {'N/A':>12}"
+                    row += f" {'N/A':>10} |"
             print(row)
-    print()
 
 
 def print_table3(irf_summary: dict):
     """Table 3: IRF accuracy by model, shock type, observable."""
-    print("\n" + "=" * 80)
-    print("TABLE 3: IRF Accuracy (MSE / Sign Accuracy)")
-    print("=" * 80)
+    print("\n\t[>] Table 3: Impulse Response Function Accuracy")
 
     shock_types = ['r', 'u', 'v']
     var_names = ['x', 'pi', 'i']
 
     for m_name in ['Transformer', 'VAR', 'BVAR']:
-        print(f"\n--- {m_name} ---")
-        print(f"{'Shock':<6} {'Var':<4} {'IRF-MSE':>10} {'Sign Acc':>10}")
-        print("-" * 32)
+        if m_name not in irf_summary:
+            continue
+        print(f"\n\t\t- {m_name}")
+        print(f"\t\t  {'Shock':<6} | {'Var':<4} | {'IRF-MSE':>10} | {'Sign Acc':>10}")
+        print("\t\t  " + "-" * 38)
         for s in shock_types:
             for v in var_names:
-                if m_name in irf_summary and s in irf_summary[m_name] \
-                        and v in irf_summary[m_name][s]:
+                if s in irf_summary[m_name] and v in irf_summary[m_name][s]:
                     entry = irf_summary[m_name][s][v]
-                    print(f"{s:<6} {v:<4} {entry['irf_mse_mean']:>10.6f} "
+                    print(f"\t\t  {s:<6} | {v:<4} | {entry['irf_mse_mean']:>10.6f} | "
                           f"{entry['sign_acc_mean']:>10.3f}")

@@ -22,7 +22,7 @@ def train_model(data: dict,
                 device: str = 'cuda',
                 d_model: int = 64,
                 n_heads: int = 4,
-                n_layers: int = 3,
+                n_layers: int = 4,
                 ff_dim: int = 256,
                 dropout: float = 0.1,
                 batch_size: int = 128,
@@ -30,15 +30,16 @@ def train_model(data: dict,
                 weight_decay: float = 1e-4,
                 epochs: int = 100,
                 patience: int = 10,
-                checkpoint_dir: str = './results/checkpoints'):
+                checkpoint_dir: str = './results/checkpoints',
+                silent: bool = False):
     os.makedirs(checkpoint_dir, exist_ok=True)
     device = torch.device(device if torch.cuda.is_available() and device == 'cuda' else 'cpu')
-    print(f"Using device: {device}")
+    if not silent:
+        print(f"\t\t- Device: {device}")
 
     train_ds = NKDataset(data['X_train'], data['Y_train'])
     val_ds = NKDataset(data['X_val'], data['Y_val'])
 
-    # Tiny subsets are faster without the extra DataLoader worker startup.
     n_workers = 0 if len(train_ds) < 1000 else 4
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               drop_last=True, num_workers=n_workers, pin_memory=True)
@@ -54,22 +55,22 @@ def train_model(data: dict,
         input_dim=input_dim, output_dim=output_dim,
     ).to(device)
 
-    # On CUDA, torch.compile usually pays for itself over a full training run.
     if hasattr(torch, 'compile') and device.type == 'cuda':
         try:
-            model = torch.compile(model, mode='reduce-overhead')
-            print("Using torch.compile for speedup")
+            model = torch.compile(model, mode='reduce-overhead', dynamic=True)
+            if not silent:
+                print("\t\t- Optimization: torch.compile (dynamic-shape mode)")
         except Exception:
             pass
 
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {total_params:,}")
+    if not silent:
+        print(f"\t\t- Parameters: {total_params:,}")
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
 
-    # Mixed precision is only useful here when CUDA is doing the work.
     use_amp = device.type == 'cuda'
     scaler = torch.amp.GradScaler('cuda') if use_amp else None
 
@@ -120,31 +121,28 @@ def train_model(data: dict,
                 val_loss += loss.item() * X_batch.size(0)
 
         val_loss /= len(val_ds)
-
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
 
-        elapsed = time.time() - t0
-        print(f"Epoch {epoch:3d}/{epochs} | "
-              f"Train: {train_loss:.6f} | Val: {val_loss:.6f} | "
-              f"LR: {scheduler.get_last_lr()[0]:.2e} | "
-              f"Time: {elapsed:.1f}s")
+        if not silent:
+            print(f"\t\t  [Epoch {epoch:3d}] Loss: {train_loss:.6f} | Val: {val_loss:.6f}")
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_epoch = epoch
             epochs_no_improve = 0
             torch.save(model.state_dict(), os.path.join(checkpoint_dir, 'best_model.pt'))
-            print(f"  -> Best model saved (val_loss={best_val_loss:.6f})")
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= patience:
-                print(f"Early stopping at epoch {epoch}")
+                if not silent:
+                    print(f"\t\t  [!] Early stopping at epoch {epoch}")
                 break
 
     model.load_state_dict(torch.load(os.path.join(checkpoint_dir, 'best_model.pt'),
                                      map_location='cpu', weights_only=True))
     model.eval()
-    print(f"Training complete. Best epoch: {best_epoch}, Best val loss: {best_val_loss:.6f}")
+    if not silent:
+        print(f"\t\t- Convergence: Epoch {best_epoch} (Val MSE: {best_val_loss:.6f})")
 
     return model, history
